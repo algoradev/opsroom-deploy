@@ -1,0 +1,4 @@
+{
+  "_doc": "Breaking-change manifest, hand-edited (the source of truth; no generation step). install.sh --upgrade computes the window between the installed versions and the target and STOPS for confirmation on any entry with breaking:true. Fields: deploy_version, product_tag, schema_head (product alembic), breaking, downgrade_safe_to, notes.",
+  "entries": []
+}

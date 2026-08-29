@@ -1,0 +1,690 @@
+# GENERATED FILE — do not edit. Regenerate: python3 deploy/customer/generate.py
+# The flat customer compose (contract: reports/141, plan: reports/142).
+# Images only — the box never builds. OPSROOM_TAG refuses to be unset:
+# an explicit tag is the contract (never a silent latest).
+name: opsroom
+networks:
+  asunset:
+    driver: bridge
+services:
+  caddy:
+    depends_on:
+      keycloak:
+        condition: service_started
+        required: true
+      opsroom-api:
+        condition: service_started
+        required: true
+      opsroom-renderer:
+        condition: service_started
+        required: true
+      opsroom-tenancy:
+        condition: service_started
+        required: true
+    image: caddy:2.8-alpine
+    networks:
+      asunset: null
+    ports:
+    - host_ip: 127.0.0.1
+      mode: ingress
+      protocol: tcp
+      published: '5173'
+      target: 5173
+    restart: unless-stopped
+    volumes:
+    - bind: {}
+      read_only: true
+      source: ./config/Caddyfile
+      target: /etc/caddy/Caddyfile
+      type: bind
+    - source: caddy-data
+      target: /data
+      type: volume
+      volume: {}
+  keycloak:
+    command:
+    - start
+    - --import-realm
+    - --http-relative-path=/auth
+    depends_on:
+      keycloak-theme-build:
+        condition: service_completed_successfully
+        required: true
+      postgres:
+        condition: service_healthy
+        required: true
+    environment:
+    - KC_DB=postgres
+    - KC_DB_PASSWORD=${KC_DB_PASSWORD}
+    - KC_DB_URL=jdbc:postgresql://postgres:5432/${KC_DB_NAME}
+    - KC_DB_USERNAME=${KC_DB_USER}
+    - KC_HEALTH_ENABLED=true
+    - KC_HOSTNAME_STRICT=true
+    - KC_HTTP_ENABLED=true
+    - KC_METRICS_ENABLED=true
+    - KC_SPI_EVENTS_LISTENER=jboss-logging
+    - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN}
+    - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+    - KC_HOSTNAME=${KC_BASE_URL:-https://${TAILSCALE_HOST}}/auth
+    - KC_HOSTNAME_ADMIN=${KC_BASE_URL:-https://${TAILSCALE_HOST}}/auth
+    - KC_HOSTNAME_STRICT_BACKCHANNEL=false
+    - KC_PROXY_HEADERS=xforwarded
+    healthcheck:
+      interval: 10s
+      retries: 30
+      start_period: 60s
+      test:
+      - CMD
+      - bash
+      - -c
+      - exec 3<>/dev/tcp/localhost/9000
+      timeout: 5s
+    image: quay.io/keycloak/keycloak:25.0
+    networks:
+      asunset: null
+    restart: unless-stopped
+    volumes:
+    - bind: {}
+      read_only: true
+      source: ./config/keycloak/realm-export.json
+      target: /opt/keycloak/data/import/realm-export.json
+      type: bind
+    - source: keycloak-themes
+      target: /opt/keycloak/themes
+      type: volume
+      volume: {}
+    - read_only: true
+      source: keycloak-providers
+      target: /opt/keycloak/providers
+      type: volume
+      volume: {}
+  keycloak-init:
+    command:
+    - /opt/asunset/init.sh
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        required: true
+    entrypoint:
+    - /bin/bash
+    environment:
+    - KC_DEV_WEB_ORIGINS=${KC_DEV_WEB_ORIGINS:-}
+    - KC_SMTP_AUTH=${KC_SMTP_AUTH:-true}
+    - KC_SMTP_FROM=${KC_SMTP_FROM:-}
+    - KC_SMTP_FROM_DISPLAY_NAME=${KC_SMTP_FROM_DISPLAY_NAME:-}
+    - KC_SMTP_HOST=${KC_SMTP_HOST:-}
+    - KC_SMTP_PASSWORD=${KC_SMTP_PASSWORD:-}
+    - KC_SMTP_PORT=${KC_SMTP_PORT:-}
+    - KC_SMTP_REPLY_TO=${KC_SMTP_REPLY_TO:-}
+    - KC_SMTP_SSL=${KC_SMTP_SSL:-false}
+    - KC_SMTP_STARTTLS=${KC_SMTP_STARTTLS:-true}
+    - KC_SMTP_USER=${KC_SMTP_USER:-}
+    - KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN}
+    - KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}
+    - KEYCLOAK_API_CLIENT_SECRET=${KEYCLOAK_API_CLIENT_SECRET}
+    - KEYCLOAK_EXTRA_AUDIENCES=${KEYCLOAK_EXTRA_AUDIENCES:-}
+    - KEYCLOAK_REALM=${KEYCLOAK_REALM}
+    - KC_AUTH_URL=http://keycloak:8080/auth
+    - TAILSCALE_HOST=${TAILSCALE_HOST}
+    - WEB_BASE_URL=${WEB_BASE_URL:-https://${TAILSCALE_HOST}}
+    image: quay.io/keycloak/keycloak:25.0
+    networks:
+      asunset: null
+    restart: 'no'
+    volumes:
+    - bind: {}
+      read_only: true
+      source: ./config/keycloak/init.sh
+      target: /opt/asunset/init.sh
+      type: bind
+  keycloak-theme-build:
+    networks:
+      asunset: null
+    restart: 'no'
+    volumes:
+    - source: keycloak-providers
+      target: /out
+      type: volume
+      volume: {}
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/asunset-keycloak-theme:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+  openfga:
+    command: run
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      OPENFGA_AUTHN_METHOD: preshared
+      OPENFGA_AUTHN_PRESHARED_KEYS: ${OPENFGA_API_KEY}
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${FGA_DB_USER}:${FGA_DB_PASSWORD}@postgres:5432/${FGA_DB_NAME}?sslmode=disable
+      OPENFGA_LOG_FORMAT: json
+      OPENFGA_LOG_LEVEL: info
+      OPENFGA_PLAYGROUND_ENABLED: 'false'
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD
+      - /openfga
+      - --help
+      timeout: 5s
+    image: openfga/openfga:v1.6
+    networks:
+      asunset: null
+    restart: unless-stopped
+  openfga-migrate:
+    command: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${FGA_DB_USER}:${FGA_DB_PASSWORD}@postgres:5432/${FGA_DB_NAME}?sslmode=disable
+    image: openfga/openfga:v1.6
+    networks:
+      asunset: null
+    restart: 'no'
+  opsroom-acceptance:
+    depends_on:
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ADMIN_DB_URL: postgresql+asyncpg://${APP_DB_OWNER:-asunset_owner}:${APP_DB_OWNER_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_URL: postgresql+asyncpg://${APP_DB_USER:-asunset}:${APP_DB_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_USER: ${APP_DB_USER:-asunset}
+      ASUNSET_ENV: ${ASUNSET_ENV:-prod}
+      FEATURES_MANIFEST: /opt/opsroom/features.yaml
+      KEYCLOAK_API_CLIENT_ID: opsroom-api
+      KEYCLOAK_API_CLIENT_SECRET: ${KEYCLOAK_API_CLIENT_SECRET:-}
+      KEYCLOAK_INTERNAL_ISSUER: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPENFGA_API_URL: ${OPENFGA_API_URL:-http://openfga:8080}
+      OPENFGA_STORE_NAME: ${OPENFGA_STORE_NAME:-asunset}
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_GATE_URL: http://opsroom-api:8001
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+      ORCH_URL: http://opsroom-orchestration:8090
+      SESSION_TOKEN_PRIVATE_KEY_B64: ${SESSION_TOKEN_PRIVATE_KEY_B64:-}
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-acceptance:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    profiles:
+    - ops
+    volumes:
+    - source: opsroom_home
+      target: /var/lib/opsroom
+      type: volume
+      volume: {}
+  opsroom-api:
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        required: true
+      keycloak-init:
+        condition: service_completed_successfully
+        required: true
+      openfga:
+        condition: service_started
+        required: true
+      opsroom-migrate:
+        condition: service_completed_successfully
+        required: true
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ADMIN_DB_URL: postgresql+asyncpg://${APP_DB_OWNER:-asunset_owner}:${APP_DB_OWNER_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_URL: postgresql+asyncpg://${APP_DB_USER:-asunset}:${APP_DB_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_USER: ${APP_DB_USER:-asunset}
+      ASUNSET_ENV: ${ASUNSET_ENV:-prod}
+      FEATURES_MANIFEST: /opt/opsroom/features.yaml
+      KEYCLOAK_API_CLIENT_ID: opsroom-api
+      KEYCLOAK_API_CLIENT_SECRET: ${KEYCLOAK_API_CLIENT_SECRET:-}
+      KEYCLOAK_INTERNAL_ISSUER: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPENFGA_API_URL: ${OPENFGA_API_URL:-http://openfga:8080}
+      OPENFGA_STORE_NAME: ${OPENFGA_STORE_NAME:-asunset}
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_AUTH_ENFORCE: ${OPSROOM_AUTH_ENFORCE:-false}
+      OPSROOM_CORS_ORIGINS: ${OPSROOM_PUBLIC_ORIGIN:?set OPSROOM_PUBLIC_ORIGIN (the SPA is served same-origin
+        behind caddy)}
+      OPSROOM_DECK_RENDERER_ALLOWED_HOSTS: opsroom-renderer,127.0.0.1,localhost
+      OPSROOM_DECK_RENDERER_URL: http://opsroom-renderer:7511/
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+      SESSION_TOKEN_PRIVATE_KEY_B64: ${SESSION_TOKEN_PRIVATE_KEY_B64:-}
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: unless-stopped
+    volumes:
+    - source: opsroom_home
+      target: /var/lib/opsroom
+      type: volume
+      volume: {}
+    - read_only: true
+      source: ${OPSROOM_DATA_MOUNT:-/dev/null}
+      target: ${OPSROOM_DATA_TARGET:-/mnt/void}
+      type: bind
+    - bind: {}
+      read_only: true
+      source: ./config/features.yaml
+      target: /opt/opsroom/features.yaml
+      type: bind
+  opsroom-doctor:
+    command: opsroom-v2 doctor --json
+    depends_on:
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ADMIN_DB_URL: postgresql+asyncpg://${APP_DB_OWNER:-asunset_owner}:${APP_DB_OWNER_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_URL: postgresql+asyncpg://${APP_DB_USER:-asunset}:${APP_DB_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_USER: ${APP_DB_USER:-asunset}
+      ASUNSET_ENV: ${ASUNSET_ENV:-prod}
+      KEYCLOAK_API_CLIENT_ID: opsroom-api
+      KEYCLOAK_API_CLIENT_SECRET: ${KEYCLOAK_API_CLIENT_SECRET:-}
+      KEYCLOAK_INTERNAL_ISSUER: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPENCODE_URL: http://opsroom-opencode:4096
+      OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPENFGA_API_URL: ${OPENFGA_API_URL:-http://openfga:8080}
+      OPENFGA_STORE_NAME: ${OPENFGA_STORE_NAME:-asunset}
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_BACKUP_DEST: ${OPSROOM_BACKUP_DEST:-}
+      OPSROOM_DECK_RENDERER_ALLOWED_HOSTS: opsroom-renderer,127.0.0.1,localhost
+      OPSROOM_DECK_RENDERER_URL: http://opsroom-renderer:7511/
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_GATE_URL: http://opsroom-api:8001
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_PUBLIC_URL: ${OPSROOM_PUBLIC_URL:-}
+      OPSROOM_TENANCY_URL: http://opsroom-tenancy:8011
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+      SESSION_TOKEN_PRIVATE_KEY_B64: ${SESSION_TOKEN_PRIVATE_KEY_B64:-}
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    profiles:
+    - ops
+    volumes:
+    - source: opsroom_home
+      target: /var/lib/opsroom
+      type: volume
+      volume: {}
+    - read_only: true
+      source: ${OPSROOM_DATA_MOUNT:-/dev/null}
+      target: ${OPSROOM_DATA_TARGET:-/mnt/void}
+      type: bind
+  opsroom-init:
+    command: 'opsroom-v2 init --org ${OPSROOM_ORG:?set OPSROOM_ORG} --team ${OPSROOM_TEAM:?set OPSROOM_TEAM}
+      --project ${OPSROOM_PROJECT:?set OPSROOM_PROJECT}
+
+      '
+    depends_on:
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_MCP_OPSROOM_URL: http://opsroom-mcp:8002/mcp
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    profiles:
+    - ops
+    volumes:
+    - source: opsroom_home
+      target: /var/lib/opsroom
+      type: volume
+      volume: {}
+  opsroom-mcp:
+    depends_on:
+      opsroom-api:
+        condition: service_started
+        required: true
+    environment:
+      MCP_BEARER: ${MCP_BEARER:-}
+      OPSROOM_API_URL: http://opsroom-api:8001
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-mcp:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: unless-stopped
+  opsroom-migrate:
+    command: opsroom-v2 migrate schema
+    depends_on:
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: 'no'
+  opsroom-opencode:
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-opencode:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: unless-stopped
+    volumes:
+    - source: opsroom_home
+      target: /var/lib/opsroom
+      type: volume
+      volume: {}
+  opsroom-orch-converge:
+    command: opsroom-v2 orch converge-project-uuid
+    depends_on:
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    profiles:
+    - ops
+  opsroom-orchestration:
+    depends_on:
+      opsroom-api:
+        condition: service_healthy
+        required: true
+      opsroom-migrate:
+        condition: service_completed_successfully
+        required: true
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ADMIN_DB_URL: postgresql+asyncpg://${APP_DB_OWNER:-asunset_owner}:${APP_DB_OWNER_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_URL: postgresql+asyncpg://${APP_DB_USER:-asunset}:${APP_DB_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_USER: ${APP_DB_USER:-asunset}
+      ASUNSET_ENV: ${ASUNSET_ENV:-prod}
+      KEYCLOAK_API_CLIENT_ID: orchestration
+      KEYCLOAK_API_CLIENT_SECRET: ${KEYCLOAK_API_CLIENT_SECRET:-}
+      KEYCLOAK_INTERNAL_ISSUER: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPENCODE_URL: http://opsroom-opencode:4096
+      OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPENFGA_API_URL: ${OPENFGA_API_URL:-http://openfga:8080}
+      OPENFGA_STORE_NAME: ${OPENFGA_STORE_NAME:-asunset}
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_AUTH_ENFORCE: ${OPSROOM_AUTH_ENFORCE:-false}
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+      SESSION_TOKEN_PRIVATE_KEY_B64: ${SESSION_TOKEN_PRIVATE_KEY_B64:-}
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-orchestration:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: unless-stopped
+  opsroom-postgres:
+    environment:
+      POSTGRES_DB: opsroom
+      POSTGRES_PASSWORD: ${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}
+      POSTGRES_USER: opsroom
+    healthcheck:
+      interval: 5s
+      retries: 20
+      test:
+      - CMD-SHELL
+      - pg_isready -U opsroom
+      timeout: 3s
+    image: postgres:16-alpine
+    networks:
+      asunset: null
+    restart: unless-stopped
+    volumes:
+    - source: opsroom-pg-data
+      target: /var/lib/postgresql/data
+      type: volume
+      volume: {}
+  opsroom-projects-backfill:
+    command: opsroom-v2 projects backfill
+    depends_on:
+      openfga:
+        condition: service_started
+        required: true
+      opsroom-postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ADMIN_DB_URL: postgresql+asyncpg://${APP_DB_OWNER:-asunset_owner}:${APP_DB_OWNER_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_URL: postgresql+asyncpg://${APP_DB_USER:-asunset}:${APP_DB_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_USER: ${APP_DB_USER:-asunset}
+      ASUNSET_ENV: ${ASUNSET_ENV:-prod}
+      KEYCLOAK_API_CLIENT_ID: opsroom-api
+      KEYCLOAK_API_CLIENT_SECRET: ${KEYCLOAK_API_CLIENT_SECRET:-}
+      KEYCLOAK_INTERNAL_ISSUER: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPENFGA_API_URL: ${OPENFGA_API_URL:-http://openfga:8080}
+      OPENFGA_STORE_NAME: ${OPENFGA_STORE_NAME:-asunset}
+      OPSROOM_ASUNSET_ORG_ID: ${OPSROOM_ASUNSET_ORG_ID:-}
+      OPSROOM_ASUNSET_PG_DSN: postgresql://${APP_DB_OWNER:?set APP_DB_OWNER (asunset owner role, from
+        the co-hosted .env)}:${APP_DB_OWNER_PASSWORD:?set APP_DB_OWNER_PASSWORD}@postgres:5432/${APP_DB_NAME:?set
+        APP_DB_NAME}
+      OPSROOM_DECLARATION_STORE: ${OPSROOM_DECLARATION_STORE:-db}
+      OPSROOM_ENV: ${OPSROOM_ENV:-production}
+      OPSROOM_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPSROOM_KEYCLOAK_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}
+      OPSROOM_OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPSROOM_OPENFGA_URL: http://openfga:8080
+      OPSROOM_V2_PG_DSN: postgresql://opsroom:${OPSROOM_PG_PASSWORD:?set OPSROOM_PG_PASSWORD}@opsroom-postgres:5432/opsroom
+      SESSION_TOKEN_PRIVATE_KEY_B64: ${SESSION_TOKEN_PRIVATE_KEY_B64:-}
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    profiles:
+    - ops
+    volumes:
+    - source: opsroom_home
+      target: /var/lib/opsroom
+      type: volume
+      volume: {}
+  opsroom-renderer:
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-renderer:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: unless-stopped
+  opsroom-tenancy:
+    command: opsroom-v2 tenancy --host 0.0.0.0 --port 8011
+    depends_on:
+      keycloak:
+        condition: service_healthy
+        required: true
+      keycloak-init:
+        condition: service_completed_successfully
+        required: true
+      openfga:
+        condition: service_started
+        required: true
+      opsroom-api:
+        condition: service_healthy
+        required: true
+      postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ADMIN_DB_URL: postgresql+asyncpg://${APP_DB_OWNER:-asunset_owner}:${APP_DB_OWNER_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_URL: postgresql+asyncpg://${APP_DB_USER:-asunset}:${APP_DB_PASSWORD:-}@postgres:5432/${APP_DB_NAME:-asunset}
+      APP_DB_USER: ${APP_DB_USER:-asunset}
+      ASUNSET_ENV: ${ASUNSET_ENV:-prod}
+      INVITE_DELIVERY: ${INVITE_DELIVERY:-temp_password}
+      KEYCLOAK_API_CLIENT_ID: asunset-api
+      KEYCLOAK_API_CLIENT_SECRET: ${KEYCLOAK_API_CLIENT_SECRET:-}
+      KEYCLOAK_INTERNAL_ISSUER: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080/auth}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-}/realms/${KEYCLOAK_REALM:-asunset}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-asunset}
+      OPENFGA_API_KEY: ${OPENFGA_API_KEY:?set OPENFGA_API_KEY}
+      OPENFGA_API_URL: ${OPENFGA_API_URL:-http://openfga:8080}
+      OPENFGA_STORE_NAME: ${OPENFGA_STORE_NAME:-asunset}
+      SESSION_TOKEN_PRIVATE_KEY_B64: ${SESSION_TOKEN_PRIVATE_KEY_B64:-}
+    healthcheck:
+      interval: 30s
+      start_period: 30s
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request as u; u.urlopen('http://127.0.0.1:8011/healthz', timeout=2)
+      timeout: 3s
+    image: ${OPSROOM_REGISTRY:?set OPSROOM_REGISTRY, e.g. ghcr.io/algoradev}/opsroom-api:${OPSROOM_TAG:?set
+      OPSROOM_TAG to a release version, e.g. 0.1.1 (no v prefix)}
+    networks:
+      asunset: null
+    restart: unless-stopped
+  postgres:
+    environment:
+      APP_DB_NAME: ${APP_DB_NAME}
+      APP_DB_OWNER: ${APP_DB_OWNER}
+      APP_DB_OWNER_PASSWORD: ${APP_DB_OWNER_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      APP_DB_USER: ${APP_DB_USER}
+      FGA_DB_NAME: ${FGA_DB_NAME}
+      FGA_DB_PASSWORD: ${FGA_DB_PASSWORD}
+      FGA_DB_USER: ${FGA_DB_USER}
+      KC_DB_NAME: ${KC_DB_NAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KC_DB_USER: ${KC_DB_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_SUPERUSER}
+    healthcheck:
+      interval: 5s
+      retries: 10
+      test:
+      - CMD-SHELL
+      - pg_isready -U ${POSTGRES_SUPERUSER}
+      timeout: 5s
+    image: postgres:16-alpine
+    networks:
+      asunset: null
+    restart: unless-stopped
+    volumes:
+    - source: postgres-data
+      target: /var/lib/postgresql/data
+      type: volume
+      volume: {}
+    - bind: {}
+      read_only: true
+      source: ./config/postgres-init
+      target: /docker-entrypoint-initdb.d
+      type: bind
+  vector:
+    command:
+    - --config-dir
+    - /etc/vector
+    depends_on:
+      keycloak:
+        condition: service_started
+        required: true
+      openfga:
+        condition: service_started
+        required: true
+    environment:
+      VECTOR_LOG: ${VECTOR_LOG_LEVEL}
+    image: timberio/vector:0.40.0-alpine
+    networks:
+      asunset: null
+    restart: unless-stopped
+    volumes:
+    - bind: {}
+      read_only: true
+      source: ./config/vector.toml
+      target: /etc/vector/vector.toml
+      type: bind
+    - bind: {}
+      read_only: true
+      source: /var/run/docker.sock
+      target: /var/run/docker.sock
+      type: bind
+volumes:
+  caddy-data: {}
+  keycloak-providers: {}
+  keycloak-themes: {}
+  opsroom-pg-data: {}
+  opsroom_home: {}
+  postgres-data: {}

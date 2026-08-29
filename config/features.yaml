@@ -1,0 +1,111 @@
+# yaml-language-server: $schema=vendor/asunset/packages/asunset_core/src/asunset_core/features/features.schema.json
+#
+# OpsRoom feature manifest (asunset PREPARATION — cluster C, cycle-A).
+#
+# The versioned source of truth for what features exist in OpsRoom. At
+# adoption it is reconciled into FGA tuples at boot + after bootstrap, and
+# routes gate on it via `require_feature("<key>")`. Enforcement is OFF during
+# preparation: this manifest LOADS and its keys VALIDATE, but no route
+# consults it until the S1 slice wires the principal + Authorizer.
+#
+# CYCLE-A shape (b999a0d238e5 ruling): userset defaults ONLY. Grants are
+# usersets — `organization#member` or `organization#admin` (role:<name>
+# #assignee is available but OpsRoom mints no product roles yet). Keys are
+# OBJECT-FREE (`decks.export`, never `decks.export:project:<id>`) — the key
+# IS the FGA object id `feature:<key>`, so a typo is a load error, not a
+# silent 403. NO `scope`/`areas` here — object-level scopes + capability
+# modes are runtime-granular (report 92 §11), deferred to v1.1.
+#
+# This is a STARTER taxonomy for Scribe's platform review; the routes each
+# key gates are wired at adoption. Split: routine authoring is any org
+# member; governed/privileged transitions (approve, formal export, feature
+# reconcile) are org admins.
+features:
+  audit.view:
+    # RESERVED (Juniper 9cb4b0cdc815): gates the OpsRoom audit viewer when
+    # that endpoint lands. Held-but-unreachable at cycle-A is deliberate — it
+    # will appear in /me/features + the matrix; that is the reserved-key
+    # posture, not a broken gate.
+    description: "Read the org's audit trail (reserved: gates the OpsRoom audit viewer when that endpoint lands)"
+    grants:
+      - organization#member
+  sources.author:
+    # Registration is AUTHORING, not governance (Juniper): a source approves
+    # the description of data the client already owns; a bad one is caught by
+    # the assertion layer before it can lie. govern-narrowly spends the admin
+    # gate where the lie lands (tables.approve). register-as-a-separate-key is
+    # a named v1.1 revisit, not settled-forever.
+    description: "Register and edit source declarations (registration is authoring)"
+    grants:
+      - organization#member
+  projects.author:
+    # The write-family rule (every write-surface family carries an .author
+    # key): project lifecycle writes gate here. The DELETE door additionally
+    # narrows to the OWNER at the object level (_owner_only, contract 135) —
+    # this key is the coarse feature gate and the kill switch, never the
+    # owner check itself. Added when the boot reconcile refused to start on
+    # the undeclared key (fail-closed doing its job on 2026-08-20's deploy).
+    description: "Project lifecycle writes (delete gates here; owner-narrowed at the object)"
+    grants:
+      - organization#member
+  tables.author:
+    description: "Author and run table declarations"
+    grants:
+      - organization#member
+  tables.approve:
+    description: "Approve a table (the governed design-state transition)"
+    grants:
+      - organization#admin
+  decks.author:
+    # Juniper ruling (ii): every write-surface family carries an .author key,
+    # so deck authoring is independently revocable + KILLABLE (enabled:false
+    # sweeps deck authoring — incl. the compute-costly render surfaces —
+    # without touching sources/tables). decks.export stays the governed output.
+    description: "Author decks (create/edit slots, slides, bindings, render)"
+    grants:
+      - organization#member
+  decks.export:
+    description: "Mint a formal deck export (a governed reproducible artifact)"
+    grants:
+      - organization#admin
+  components.author:
+    # Juniper ruling 9f4289270b9e: components are written through governed
+    # writers at :8001 (create/update_component_governed), so the
+    # every-write-surface-family-carries-an-.author-key rule applies —
+    # total kill-switch coverage, no omission-shaped gap. Inert until someone
+    # cares; an inconsequential surface still deserves a kill switch.
+    description: "Author component declarations"
+    grants:
+      - organization#member
+  methods.author:
+    # Juniper ruling aae5ab3a2ec2 (R3 late-catch, the components.author
+    # analogue): methods are a governed write family (create/update through
+    # the governed writers), so the every-write-family-.author rule applies.
+    # ADD-the-key, never fold into tables.* — folding widens a ruled key to
+    # cover a second family and breaks the manifest-as-complete-map property.
+    description: "Author method declarations"
+    grants:
+      - organization#member
+  methods.approve:
+    # The method design_state transition is a governed transition — the
+    # tables.approve-class admin gate (every governed transition surface
+    # carries its .approve).
+    description: "Approve a method (the governed design-state transition)"
+    grants:
+      - organization#admin
+  assertions.author:
+    # Assertions are a governed write family (create/update/delete through
+    # the governed writers). .author per the write-family rule.
+    description: "Author assertion declarations (create/edit/delete)"
+    grants:
+      - organization#member
+  assertions.approve:
+    # Assertion approve/reject are governed transitions — tables.approve-class
+    # admin gate.
+    description: "Approve or reject an assertion (the governed transitions)"
+    grants:
+      - organization#admin
+  orchestration.dispatch:
+    description: "Dispatch and supervise agent sessions"
+    grants:
+      - organization#member

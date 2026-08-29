@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpsRoom setup</title>
+<style>
+  :root{--bg:#f6f6f4;--card:#fff;--ink:#1c1c1a;--mut:#6b6b66;--line:#e3e3de;--field:#cfcfc9;
+        --errbg:#fbe9e7;--errline:#d97a6e;--errink:#8a2f24}
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#161614;--card:#1f1f1c;--ink:#eceae4;--mut:#98968e;--line:#33332e;--field:#44443e;
+          --errbg:#3a201c;--errline:#d97a6e;--errink:#f2b3a8}}
+  *{box-sizing:border-box}
+  body{margin:0;padding:2rem 1rem 4rem;background:var(--bg);color:var(--ink);
+       font:15px/1.5 ui-sans-serif,system-ui,sans-serif}
+  main{max-width:640px;margin:0 auto}
+  h1{font-size:1.4rem;margin:0 0 .25rem}
+  .sub{color:var(--mut);margin:0 0 1.5rem}
+  fieldset{border:1px solid var(--line);border-radius:10px;padding:1rem 1.3rem 1.1rem;margin:0 0 1.2rem;
+           background:var(--card)}
+  legend{font-weight:600;padding:0 .4rem}
+  label{display:block;font-size:.85rem;color:var(--mut);margin:.7rem 0 .25rem}
+  input,select{width:100%;padding:.5rem .6rem;border:1px solid var(--field);border-radius:6px;
+               font:inherit;color:var(--ink);background:var(--card)}
+  input:focus,select:focus{outline:2px solid var(--ink);outline-offset:1px}
+  .why{font-size:.8rem;color:var(--mut);margin:.6rem 0 0}
+  code{font-size:.9em}
+  [hidden]{display:none !important}
+  button{font:inherit;font-weight:600;padding:.6rem 1.2rem;border:0;border-radius:6px;
+         background:var(--ink);color:var(--bg);cursor:pointer}
+  .err{background:var(--errbg);border:1px solid var(--errline);color:var(--errink);
+       padding:.6rem .8rem;border-radius:6px;margin:0 0 1.2rem;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<main>
+  <h1>OpsRoom — first-run setup</h1>
+  <p class="sub">Everything the deployment needs, once. <b>It will not ask for your
+  organization's name</b> — that is the product's question, answered after you log in.</p>
+  <!--ERR-->
+  <form method="post" action="/setup">
+    <fieldset>
+      <legend>Administrator</legend>
+      <label for="admin_user">Username</label>
+      <input id="admin_user" name="admin_user" required autocomplete="off" placeholder="you">
+      <label for="admin_pass">Password</label>
+      <input id="admin_pass" name="admin_pass" type="password" required minlength="12" autocomplete="new-password">
+      <p class="why">The platform admin — the account that creates the organization.
+      No seeded <code>alice</code>; no password in the repo.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Backups (Cloudflare R2, or any S3-compatible bucket)</legend>
+      <label for="backup_bucket">Bucket</label>
+      <input id="backup_bucket" name="backup_bucket" required placeholder="opsroom-backups">
+      <label for="s3_endpoint">Endpoint URL</label>
+      <input id="s3_endpoint" name="s3_endpoint" type="url" required placeholder="https://&lt;account-id&gt;.r2.cloudflarestorage.com">
+      <label for="s3_key">Access Key ID</label>
+      <input id="s3_key" name="s3_key" required autocomplete="off">
+      <label for="s3_secret">Secret Access Key</label>
+      <input id="s3_secret" name="s3_secret" type="password" required autocomplete="off">
+      <p class="why">Object Read &amp; Write, scoped to the bucket.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Recovery keys — two places, or nothing</legend>
+      <label for="age_mode">Age key</label>
+      <select id="age_mode" name="age_mode">
+        <option value="generate">Generate a new one (first instance)</option>
+        <option value="restore">Restore an existing one (rebuild — keeps old backups readable)</option>
+      </select>
+      <div data-show="age_mode=restore" hidden>
+        <label for="age_key">Existing AGE-SECRET-KEY</label>
+        <input id="age_key" name="age_key" type="password" autocomplete="off" placeholder="AGE-SECRET-KEY-1…">
+      </div>
+      <label for="pass_mode">Backup passphrase</label>
+      <select id="pass_mode" name="pass_mode">
+        <option value="generate">Generate</option>
+        <option value="provide">I have one</option>
+      </select>
+      <div data-show="pass_mode=provide" hidden>
+        <label for="backup_pass">Passphrase (16+ characters)</label>
+        <input id="backup_pass" name="backup_pass" type="password" autocomplete="off">
+      </div>
+      <p class="why">Both are shown once, after install, to put in a password manager.
+      The last instance was lost because each existed in one place.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Invites</legend>
+      <label for="invite_mode">Delivery</label>
+      <select id="invite_mode" name="invite_mode">
+        <option value="temp_password">Temporary password, shared by the admin (no email needed)</option>
+        <option value="magic_link">Emailed link (needs SMTP — not configured here)</option>
+      </select>
+    </fieldset>
+
+    <button type="submit">Install</button>
+  </form>
+</main>
+<script>
+  // Show a conditional field only when its select says so. Purely visual:
+  // the server's coherence check is what actually enforces it.
+  for (const box of document.querySelectorAll("[data-show]")) {
+    const [name, want] = box.dataset.show.split("=");
+    const sel = document.querySelector(`select[name="${name}"]`);
+    const sync = () => { box.hidden = sel.value !== want; };
+    sel.addEventListener("change", sync); sync();
+  }
+</script>
+</body>
+</html>
+

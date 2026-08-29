@@ -1,0 +1,85 @@
+# OpsRoom consumer Caddyfile — co-hosted (K2) ingress, tailscale mode.
+#
+# Remounted over asunset's generated Caddyfile via the sanctioned
+# override-mount seam (consuming-asunset.md §5b): compose dedupes volume
+# mounts by container path, last file wins, so this replaces the
+# generated one with ZERO edits to vendor/asunset/. See
+# deploy/compose.product.yml (the caddy override block).
+#
+# Verify after any change: asunset's `doctor` edge-auth-route probes
+# /auth through this front door and compares the advertised issuer.
+
+:5173 {
+	encode zstd gzip
+
+	# Edge security posture — the header DIVISION agreed at R4 (Atlas's
+	# composition check + Scribe's ownership answer): CADDY owns the
+	# TLS/edge concerns (STS, -Server); the GATE's SecurityHeadersMiddleware
+	# owns the SPA posture (CSP, X-Frame-Options, X-Content-Type-Options,
+	# Referrer-Policy — setdefault semantics, so both-set stays harmless).
+	# CSP is called clean when the BROWSER-observed headers match §5b —
+	# measure at the browser, not at either layer.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	# NON-NEGOTIABLE, verbatim from §5b. Keycloak runs with
+	# --http-relative-path=/auth and the issuer the API validates is
+	# derived from the public /auth URL — preserve the prefix; breaking
+	# this kills login platform-wide.
+	handle /auth/* {
+		reverse_proxy keycloak:8080
+	}
+
+	# OpsRoom's orchestration API + live agent event stream, same-origin.
+	# The SPA's OrchestrationClient defaults to same-origin and the
+	# session stream is a browser EventSource on /orch/* — it must route
+	# to the orchestration service, BEFORE the SPA catch-all, prefix
+	# PRESERVED (handle, not handle_path — matches the vite dev proxy
+	# ^/orch(/|$) -> :8090). flush_interval -1 disables caddy response
+	# buffering so SSE events are never held back.
+	# NOTE: this stream is UNAUTHENTICATED until the stream-auth slice
+	# (Atlas's SSE ruling). Behind caddy on the tailnet that is the same
+	# exposure as today — no regression — but it is topology, not auth.
+	handle /orch/* {
+		reverse_proxy opsroom-orchestration:8090 {
+			flush_interval -1
+		}
+	}
+
+	# Fixed-canvas deck viewer, same-origin with the adopted SPA. The
+	# renderer build uses Vite base=/deck-viewer/, so browser asset URLs
+	# are /deck-viewer/assets/*; handle_path strips the prefix before
+	# proxying to the static renderer service.
+	handle_path /deck-viewer/* {
+		reverse_proxy opsroom-renderer:7511
+	}
+
+	# Tenancy surface (swat-01, report 102 §5): org/team/user management
+	# is asunset's plane, served by opsroom-tenancy AS the asunset-api
+	# confidential client — never by the product gate (the B-ruling).
+	# Prefixes PRESERVED (the routers carry /orgs /teams /users), and the
+	# matcher is SEGMENT-BOUNDED (Relay): exact path + /* per prefix, so
+	# near-prefix paths like /usersettings or /orgs-old can never leak
+	# here. /healthz is deliberately NOT routed — the FGA-identity health
+	# answer stays in-network (doctor reads it by service DNS).
+	@tenancy path /orgs /orgs/* /teams /teams/* /users /users/*
+	handle @tenancy {
+		reverse_proxy opsroom-tenancy:8011
+	}
+
+	# OpsRoom serves its SPA same-origin AND its API under /api/* from a
+	# single service (opsroom-api:8001). Its routes are PREFIXED (/api/…),
+	# so the prefix is PRESERVED — `handle`, not `handle_path` (§5b's
+	# preserve-vs-strip table; the single easiest mistake in the swap).
+	# The SPA catch-all and /api/* therefore both land on opsroom-api.
+	handle {
+		reverse_proxy opsroom-api:8001
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

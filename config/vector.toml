@@ -1,0 +1,78 @@
+# Base Vector pipeline: tails container stdout via the Docker socket,
+# classifies events into (keycloak | openfga | app | other), and emits
+# a common JSON shape to stdout + a rotating file.
+#
+# Overlays (e.g. infra/vector/wazuh.toml) add extra sinks that consume
+# the "classified" transform output. Do not move the transform name without
+# updating overlays.
+
+data_dir = "/var/lib/vector"
+
+# --- sources ---
+
+[sources.docker]
+type = "docker_logs"
+# Filter to services in the asunset compose project to avoid picking up
+# unrelated containers on the same host.
+include_labels = ["com.docker.compose.project=asunset"]
+
+# --- transforms ---
+
+[transforms.classified]
+type = "remap"
+inputs = ["docker"]
+source = '''
+service, err = string(.label."com.docker.compose.service")
+if err != null { service = "unknown" }
+
+if service == "keycloak" {
+  .asunset_source = "keycloak"
+} else if service == "openfga" {
+  .asunset_source = "openfga"
+} else if service == "api" {
+  .asunset_source = "app"
+} else {
+  .asunset_source = "other"
+}
+
+# Both OpenFGA and the FastAPI app emit structured JSON logs.
+# Parse when possible and lift top-level fields for correlation.
+parsed, err = parse_json(.message)
+if err == null && is_object(parsed) {
+  parsed_obj = object!(parsed)
+
+  # Preserve the raw message alongside the parsed fields.
+  .parsed = parsed_obj
+
+  # Normalize correlation identifiers under a single trace_id field so
+  # downstream queries don't have to know where each source puts theirs.
+  if exists(parsed_obj.correlation_id) {
+    .trace_id = parsed_obj.correlation_id
+  } else if exists(parsed_obj.trace_id) {
+    .trace_id = parsed_obj.trace_id
+  } else if exists(parsed_obj.request_id) {
+    .trace_id = parsed_obj.request_id
+  }
+
+  # Keycloak admin/user events carry type/userId fields when the
+  # jboss-logging listener is active; surface them for easy SIEM filtering.
+  if .asunset_source == "keycloak" && exists(parsed_obj.type) {
+    .event_type = parsed_obj.type
+  }
+}
+
+.ingested_at = now()
+'''
+
+# --- sinks (base / dev) ---
+
+[sinks.console]
+type = "console"
+inputs = ["classified"]
+encoding.codec = "json"
+
+[sinks.file]
+type = "file"
+inputs = ["classified"]
+path = "/var/log/asunset/events-%Y-%m-%d.ndjson"
+encoding.codec = "json"
