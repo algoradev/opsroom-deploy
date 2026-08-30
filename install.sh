@@ -146,6 +146,16 @@ if [ "${1:-}" = "--deploy" ]; then
   note "installing:starting the product (pulled images — no build)"
   run $DC up -d --wait --wait-timeout 900 >/dev/null 2>&1 || dfail "the stack did not come up healthy"
 
+  # The full up RE-RUNS the keycloak-init one-shot, which RESETS session
+  # lifespans to the shipped 900s on every run (the known regression the
+  # private repo's up.sh guards the same way). Re-apply AFTER the up, and
+  # re-gate on realm-doctor so any other reset is caught too. Found live:
+  # the first pull-path instance logged its admin out after 15 minutes,
+  # 2026-08-30 — the doctor had passed BEFORE the reset happened behind it.
+  note "installing:re-applying realm session settings"
+  run ./bin/kc-session-lifespans.sh >/dev/null 2>&1 || true
+  run ./bin/realm-doctor.sh >/dev/null 2>&1 || dfail "realm incoherent after full up — check ./bin/realm-doctor.sh"
+
   note "installing:creating the instance home"
   run $DC --profile ops run --rm --no-deps opsroom-init >>"$INSTALL_LOG" 2>&1 || dfail "opsroom-init failed — see $INSTALL_LOG"
 
