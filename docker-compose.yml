@@ -10,17 +10,28 @@ services:
   caddy:
     depends_on:
       keycloak:
-        condition: service_started
+        condition: service_healthy
         required: true
       opsroom-api:
-        condition: service_started
+        condition: service_healthy
         required: true
       opsroom-renderer:
-        condition: service_started
+        condition: service_healthy
         required: true
       opsroom-tenancy:
-        condition: service_started
+        condition: service_healthy
         required: true
+    healthcheck:
+      interval: 15s
+      retries: 5
+      start_period: 10s
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://localhost:2019/config/
+      timeout: 5s
     image: caddy:2.8-alpine
     networks:
       asunset: null
@@ -165,10 +176,11 @@ services:
     healthcheck:
       interval: 10s
       retries: 5
+      start_period: 15s
       test:
       - CMD
-      - /openfga
-      - --help
+      - /usr/local/bin/grpc_health_probe
+      - -addr=localhost:8081
       timeout: 5s
     image: openfga/openfga:v1.6
     networks:
@@ -240,7 +252,7 @@ services:
         condition: service_completed_successfully
         required: true
       openfga:
-        condition: service_started
+        condition: service_healthy
         required: true
       opsroom-migrate:
         condition: service_completed_successfully
@@ -387,7 +399,7 @@ services:
   opsroom-mcp:
     depends_on:
       opsroom-api:
-        condition: service_started
+        condition: service_healthy
         required: true
     environment:
       MCP_BEARER: ${MCP_BEARER:-}
@@ -523,7 +535,7 @@ services:
     command: opsroom-v2 projects backfill
     depends_on:
       openfga:
-        condition: service_started
+        condition: service_healthy
         required: true
       opsroom-postgres:
         condition: service_healthy
@@ -580,7 +592,7 @@ services:
         condition: service_completed_successfully
         required: true
       openfga:
-        condition: service_started
+        condition: service_healthy
         required: true
       opsroom-api:
         condition: service_healthy
@@ -666,6 +678,17 @@ services:
         required: true
     environment:
       VECTOR_LOG: ${VECTOR_LOG_LEVEL}
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 10s
+      test:
+      - CMD
+      - wget
+      - -q
+      - --spider
+      - http://127.0.0.1:8686/health
+      timeout: 5s
     image: timberio/vector:0.40.0-alpine
     networks:
       asunset: null

@@ -11,3 +11,15 @@ upgrades.json entry, which keeps this honest).
 - note: 0.1.0 images exist but are NOT consumable — the
   asunset-keycloak-theme image at 0.1.0 is mis-built (product repo,
   board 140 goal 1). Never pin 0.1.0.
+
+## 2026-08-30 — deploy-v0.1.1
+
+- OPSROOM_TAG: 0.1.1 (unchanged)
+- deploy repo: deploy-v0.1.1 (prev: deploy-v0.1.0)
+- installer: KEYCLOAK_PUBLIC_URL now written (issuer mismatch on first
+  login); session lifespans re-applied AFTER the full up (keycloak-init
+  resets them on every run) with the realm-doctor gate moved after.
+- compose: readiness gates hardened (spec 143 in the product repo) —
+  openfga probed via grpc_health_probe with dependents on
+  service_healthy; caddy healthchecked and healthy-gated; mcp gates on
+  ready api; vector healthchecked ([api] added to vector.toml).

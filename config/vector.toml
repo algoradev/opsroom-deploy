@@ -76,3 +76,9 @@ type = "file"
 inputs = ["classified"]
 path = "/var/log/asunset/events-%Y-%m-%d.ndjson"
 encoding.codec = "json"
+
+# Health endpoint for the container healthcheck (loopback only) — a
+# silent audit tailer is a silent audit gap (139 s8 item 6).
+[api]
+enabled = true
+address = "127.0.0.1:8686"
