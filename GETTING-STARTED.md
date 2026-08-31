@@ -21,6 +21,10 @@ fifteen minutes — most of it unattended.
    R2). The setup form asks for these; you can add them later, but an
    instance without backups is a promise to your future self you may
    regret.
+5. **Outbound network access** from the server to: `ghcr.io`,
+   `docker.io`, `quay.io` (images), `tailscale.com`, `github.com`, and
+   your backup endpoint. If your server sits behind an egress firewall,
+   allow these first — otherwise step 1 fails partway with no warning.
 
 ## Step 1 — one command on the server
 
@@ -34,6 +38,15 @@ It asks for the pull token and the Tailscale key, installs its tools,
 joins your tailnet, downloads the product, and then prints a URL and
 exits. **You are done with the terminal** — you can close the SSH
 session; nothing that follows depends on it.
+
+*Unattended / cloud-init:* provide both credentials up front and nothing
+prompts:
+
+```
+sudo OPSROOM_PULL_TOKEN=... TS_AUTHKEY=tskey-auth-... bash install.sh
+```
+
+(or `--token-file /path` to keep the token out of shell history).
 
 ## Step 2 — one form in your browser
 
