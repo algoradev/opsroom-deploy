@@ -34,10 +34,12 @@ SSH into the server and run:
 curl -fsSL https://raw.githubusercontent.com/algoradev/opsroom-deploy/main/install.sh | sudo bash
 ```
 
-It asks for the pull token and the Tailscale key, installs its tools,
-joins your tailnet, downloads the product, and then prints a URL and
-exits. **You are done with the terminal** — you can close the SSH
-session; nothing that follows depends on it.
+It asks for **one thing — your Tailscale key** — installs its tools,
+joins your tailnet, and prints a URL, then exits (about two minutes).
+The pull token goes into the browser form in step 2, where a typo is a
+field error instead of a stalled install. **You are done with the
+terminal** — you can close the SSH session; nothing that follows
+depends on it.
 
 *Unattended / cloud-init:* provide both credentials up front and nothing
 prompts:

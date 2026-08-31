@@ -39,6 +39,16 @@
   organization's name</b> — that is the product's question, answered after you log in.</p>
   <!--ERR-->
   <form method="post" action="/setup">
+    <!--REGISTRY-->
+    <fieldset>
+      <legend>Product download</legend>
+      <label for="pull_token">Registry pull token (from your OpsRoom vendor)</label>
+      <input id="pull_token" name="pull_token" type="password" required autocomplete="off" placeholder="read-only token">
+      <p class="why">Checked against the registry the moment you submit — a typo is a
+      field error here, not a stalled install later. The download itself happens as
+      the first step of the install, on the progress page.</p>
+    </fieldset>
+    <!--/REGISTRY-->
     <fieldset>
       <legend>Administrator</legend>
       <label for="admin_user">Username</label>

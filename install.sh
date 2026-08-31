@@ -6,12 +6,14 @@
 #   sudo OPSROOM_PULL_TOKEN=... TS_AUTHKEY=tskey-auth-... bash install.sh   # unattended
 #   sudo bash install.sh --token-file /path/to/token                        # token w/o env or tty
 #
-# It asks for TWO things — a registry pull token and a Tailscale auth key —
-# then joins the tailnet, pulls the released images (NOTHING is built on
-# this box), and prints a URL. THEN IT EXITS. The rest happens in your
-# browser: open the URL, fill the setup form, watch it install, land on
-# the login. A dropped SSH connection cannot kill the install — it does
-# not run in your session.
+# It asks for ONE thing — a Tailscale auth key — joins the tailnet, and
+# prints a URL. THEN IT EXITS (~2 minutes). The rest happens in your
+# browser: the form takes the registry pull token (validated live at
+# submit) and everything else; the product download (NOTHING is built on
+# this box) runs as the install's first progress step. A dropped SSH
+# connection cannot kill the install — it does not run in your session.
+# Unattended: provide OPSROOM_PULL_TOKEN (or --token-file) and the pull
+# happens up front, the form field disappears.
 #
 # Other modes:
 #   sudo bash install.sh --upgrade    # git pull + pull + up, gated by upgrades.json
@@ -118,7 +120,18 @@ if [ "${1:-}" = "--deploy" ]; then
     ( umask 077; age-keygen -o "$AGE_DIR/keys.txt" 2>/dev/null )
   fi
   chown -R "$OPS_USER:$OPS_USER" "$HOME_DIR/.config"
+  PULL_TOKEN=$(j pull_token)
   shred -u "$ANSWERS" 2>/dev/null || rm -f "$ANSWERS"
+
+  # deploy-v0.2.0: the pull runs HERE, as the install's first visible
+  # step, with the token from the form (already registry-validated at
+  # submit). Absent token = the unattended path already pulled up front.
+  if [ -n "$PULL_TOKEN" ]; then
+    note "installing:downloading the product (several GB — the longest step)"
+    printf '%s' "$PULL_TOKEN" | run docker login ghcr.io -u algoradev --password-stdin >/dev/null 2>&1 \
+      || dfail "docker login failed with the form's token"
+    run $DC pull -q >>"$INSTALL_LOG" 2>&1 || dfail "image pull failed — see $INSTALL_LOG"
+  fi
 
   note "installing:starting the identity plane"
   run $DC up -d --wait --wait-timeout 900 postgres openfga keycloak vector >/dev/null 2>&1 || dfail "identity plane did not come up"
@@ -288,23 +301,26 @@ fi
 # FRONT HALF — runs in your terminal, ends at a URL, then exits.
 # ════════════════════════════════════════════════════════════════════════
 
-# ── 1. the registry pull token, validated BEFORE anything is spent ─────────
+# ── 1. the registry pull token — OPTIONAL here (deploy-v0.2.0) ─────────────
+# The terminal asks for ONE thing: the tailscale key. The pull token
+# normally goes into the browser form, where a typo is a field error and
+# a retry is free. Providing it here (env or --token-file — unattended /
+# cloud-init) keeps the old behavior: validate now, pull early.
 PULL_TOKEN="${OPSROOM_PULL_TOKEN:-}"
 if [ "${1:-}" = "--token-file" ] && [ -n "${2:-}" ]; then
   PULL_TOKEN=$(cat "$2") || die "cannot read token file $2"
 fi
-if [ -z "$PULL_TOKEN" ] && { : > /dev/tty; } 2>/dev/null; then
-  printf 'Registry pull token (read-only; from your OpsRoom vendor): ' > /dev/tty
-  IFS= read -rs PULL_TOKEN < /dev/tty; printf '\n' > /dev/tty
+PULLED=0
+if [ -n "$PULL_TOKEN" ]; then
+  say "registry (token provided up front)"
+  RTOK=$(curl -fsS -u "x:$PULL_TOKEN" "https://${REGISTRY_HOST}/token?scope=repository:${REGISTRY_NS}/opsroom-api:pull&service=${REGISTRY_HOST}" \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])' 2>/dev/null) || die "the registry rejected the token"
+  curl -fsS -o /dev/null -H "Authorization: Bearer $RTOK" \
+    "https://${REGISTRY_HOST}/v2/${REGISTRY_NS}/opsroom-api/tags/list" \
+    || die "token authenticates but cannot read images — it needs pull (read) access"
+  ok "token verified against ${REGISTRY_HOST}/${REGISTRY_NS}"
+  PULLED=1
 fi
-[ -n "$PULL_TOKEN" ] || die "no pull token. Set OPSROOM_PULL_TOKEN=..., or use --token-file, for unattended runs."
-say "registry"
-RTOK=$(curl -fsS -u "x:$PULL_TOKEN" "https://${REGISTRY_HOST}/token?scope=repository:${REGISTRY_NS}/opsroom-api:pull&service=${REGISTRY_HOST}" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])' 2>/dev/null) || die "the registry rejected the token"
-curl -fsS -o /dev/null -H "Authorization: Bearer $RTOK" \
-  "https://${REGISTRY_HOST}/v2/${REGISTRY_NS}/opsroom-api/tags/list" \
-  || die "token authenticates but cannot read images — it needs pull (read) access"
-ok "token verified against ${REGISTRY_HOST}/${REGISTRY_NS}"
 
 # ── 2. the tailscale key ───────────────────────────────────────────────────
 TS_AUTHKEY="${TS_AUTHKEY:-}"
@@ -389,20 +405,25 @@ fi
 git config --system --add safe.directory "$REPO_DIR" 2>/dev/null || true
 ok "$(cd "$REPO_DIR" && git log -1 --format='%h %s' 2>/dev/null | cut -c1-50 || echo tarball)"
 
-# ── 7. login as the OPS USER + pull everything (no build, ever) ────────────
-say "images"
-printf '%s' "$PULL_TOKEN" | sudo -u "$OPS_USER" docker login "$REGISTRY_HOST" -u "${OPSROOM_PULL_USER:-$REGISTRY_NS}" --password-stdin >/dev/null \
-  || die "docker login failed for the ops user"
-# The compose file's ${VAR:?} guards protect RUNNING with unset values;
-# pulling only needs the image refs, so the guarded non-pin vars get
-# throwaway values here (the deploy phase generates the real ones).
-( cd "$REPO_DIR" && sudo -u "$OPS_USER" env \
-    OPSROOM_ORG=x OPSROOM_PROJECT=x OPSROOM_TEAM=x OPSROOM_PG_PASSWORD=x \
-    OPSROOM_PUBLIC_ORIGIN=x OPENFGA_API_KEY=x \
-    APP_DB_NAME=x APP_DB_OWNER=x APP_DB_OWNER_PASSWORD=x \
-    docker compose --env-file release.env pull -q ) \
-  || die "image pull failed — check the token and release.env's pin"
-ok "all images pulled at $(grep '^OPSROOM_TAG=' "$REPO_DIR/release.env" | cut -d= -f2)"
+# ── 7. early pull — ONLY when the token came up front (unattended path) ────
+if [ "$PULLED" = 1 ]; then
+  say "images (early pull — token was provided up front)"
+  printf '%s' "$PULL_TOKEN" | sudo -u "$OPS_USER" docker login "$REGISTRY_HOST" -u "${OPSROOM_PULL_USER:-$REGISTRY_NS}" --password-stdin >/dev/null \
+    || die "docker login failed for the ops user"
+  # The compose file's ${VAR:?} guards protect RUNNING with unset values;
+  # pulling only needs the image refs, so the guarded non-pin vars get
+  # throwaway values here (the deploy phase generates the real ones).
+  ( cd "$REPO_DIR" && sudo -u "$OPS_USER" env \
+      OPSROOM_ORG=x OPSROOM_PROJECT=x OPSROOM_TEAM=x OPSROOM_PG_PASSWORD=x \
+      OPSROOM_PUBLIC_ORIGIN=x OPENFGA_API_KEY=x \
+      APP_DB_NAME=x APP_DB_OWNER=x APP_DB_OWNER_PASSWORD=x \
+      docker compose --env-file release.env pull -q ) \
+    || die "image pull failed — check the token and release.env's pin"
+  ok "all images pulled at $(grep '^OPSROOM_TAG=' "$REPO_DIR/release.env" | cut -d= -f2)"
+else
+  say "images"
+  ok "deferred — the pull runs as the install's first step, with the token from the form"
+fi
 
 # ── 8. serve the form, print the URL, and EXIT ─────────────────────────────
 say "setup"
@@ -413,6 +434,7 @@ ANSWERS="$SETUP_DIR/answers.json"
 : > "$STATUS_FILE"; chmod 644 "$STATUS_FILE"
 : > "$INSTALL_LOG"; chmod 644 "$INSTALL_LOG"
 setsid python3 "$SETUP_DIR/server.py" "$SETUP_DIR" "$ANSWERS" "$SETUP_PORT" "$STATUS_FILE" "$SELF_COPY" "$REPO_DIR" "$TS_DNS" "$OPS_USER" "$INSTALL_LOG" \
+  "$REGISTRY_HOST" "$REGISTRY_NS" "$PULLED" \
   </dev/null >>"$INSTALL_LOG" 2>&1 &
 sleep 1
 tailscale serve --https=443 off >/dev/null 2>&1 || true

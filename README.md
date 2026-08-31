@@ -6,9 +6,9 @@ container images from a private registry, pinned by `release.env`.
 Nothing is ever built on your box.
 
 You need two credentials, both from your OpsRoom vendor / your own infra:
-a **registry pull token** (read-only) and a **Tailscale auth key**
-(single-use; the instance is served tailnet-only — that is its front-door
-security).
+a **registry pull token** (read-only; entered in the setup form) and a
+**Tailscale auth key** (single-use; the instance is served tailnet-only —
+that is its front-door security).
 
 ## Install
 
@@ -19,8 +19,9 @@ Keycloak sets the floor):
 curl -fsSL https://raw.githubusercontent.com/algoradev/opsroom-deploy/main/install.sh | sudo bash
 ```
 
-It asks for the two credentials, pulls everything, prints a URL, and
-exits. Open the URL in a browser on your tailnet, fill the setup form
+It asks for **one thing — the Tailscale key** — prints a URL, and
+exits (~2 minutes). The pull token goes into the form, validated live at
+submit; the product download runs as the install's first progress step. Open the URL in a browser on your tailnet, fill the setup form
 (your admin account, backup credentials, recovery keys), and watch it
 install — the page drops you into OpsRoom's login when it is done. The
 install does not run in your terminal; a dropped SSH connection cannot

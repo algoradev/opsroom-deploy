@@ -1,13 +1,38 @@
 # opsroom-setup-server
-import http.server, json, os, sys, urllib.parse, secrets, subprocess
-ROOT, ANSWERS, PORT, STATUS, SELF, REPO, TSDNS, OPSUSER, LOG = sys.argv[1:10]
+import base64, http.server, json, os, re, sys, urllib.parse, urllib.request, secrets, subprocess
+ROOT, ANSWERS, PORT, STATUS, SELF, REPO, TSDNS, OPSUSER, LOG, REGHOST, REGNS, PULLED = sys.argv[1:13]
 FORM = open(os.path.join(ROOT, "index.html")).read()
+if PULLED == "1":
+    # Images were already pulled by the front half (env-token / unattended
+    # path) — the registry fieldset would be a lie, so it is stripped.
+    FORM = re.sub(r"<!--REGISTRY-->.*?<!--/REGISTRY-->", "", FORM, flags=re.S)
 INSTALLING = open(os.path.join(ROOT, "installing.html")).read()
 # The deploy phase kills THIS pid at handover; the browser tells this server
 # apart from the product by the X-OpsRoom-Setup header on every reply.
 open(os.path.join(ROOT, "server.pid"), "w").write(str(os.getpid()))
+def registry_ok(token):
+    """Probe the registry with the token — a typo becomes a field error at
+    submit, not a stalled install later. Two steps, like docker itself:
+    mint a scoped bearer, then read the repo's tag list."""
+    try:
+        basic = base64.b64encode(("x:" + token).encode()).decode()
+        req = urllib.request.Request(
+            "https://%s/token?scope=repository:%s/opsroom-api:pull&service=%s" % (REGHOST, REGNS, REGHOST),
+            headers={"Authorization": "Basic " + basic})
+        bearer = json.load(urllib.request.urlopen(req, timeout=10)).get("token", "")
+        req2 = urllib.request.Request(
+            "https://%s/v2/%s/opsroom-api/tags/list" % (REGHOST, REGNS),
+            headers={"Authorization": "Bearer " + bearer})
+        urllib.request.urlopen(req2, timeout=10)
+        return True
+    except Exception:
+        return False
 def coherence(f):
     e = []
+    if PULLED != "1":
+        t = f.get("pull_token", "").strip()
+        if not t: e.append("The registry pull token is required — your vendor provides it.")
+        elif not registry_ok(t): e.append("The registry rejected that pull token (or it lacks read access). Check it with your vendor.")
     if f.get("age_mode") == "restore" and not f.get("age_key", "").startswith("AGE-SECRET-KEY-"): e.append("Restore chosen but no AGE-SECRET-KEY given.")
     if f.get("pass_mode") == "provide" and len(f.get("backup_pass", "")) < 16: e.append("Backup passphrase must be at least 16 characters.")
     if f.get("invite_mode") == "magic_link": e.append("magic_link needs SMTP, which this installer does not configure. Choose temporary password.")

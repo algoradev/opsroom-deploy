@@ -23,3 +23,14 @@ upgrades.json entry, which keeps this honest).
   openfga probed via grpc_health_probe with dependents on
   service_healthy; caddy healthchecked and healthy-gated; mcp gates on
   ready api; vector healthchecked ([api] added to vector.toml).
+
+## 2026-08-30 — deploy-v0.2.0
+
+- OPSROOM_TAG: 0.1.1 (unchanged)
+- deploy repo: deploy-v0.2.0 (prev: deploy-v0.1.1)
+- FLOW CHANGE: the terminal asks only for the Tailscale key; the
+  registry pull token moves into the setup form (validated live at
+  submit — a typo is a field error, not a stalled install). The
+  multi-GB image pull moves onto the progress page as its first step;
+  the URL appears in ~2 minutes. Unattended path unchanged
+  (OPSROOM_PULL_TOKEN / --token-file pulls early, form field hidden).
