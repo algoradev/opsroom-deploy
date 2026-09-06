@@ -108,7 +108,19 @@
     <button type="submit">Install</button>
   </form>
 </main>
+<!--VALUES-->
 <script>
+  // A field error re-renders this page. Put back everything that was typed
+  // EXCEPT the secrets — passwords, tokens and keys are never echoed into
+  // HTML. Runs BEFORE the data-show sync so a restored select re-opens its
+  // conditional field.
+  const prefill = document.getElementById("prefill");
+  if (prefill) {
+    for (const [name, value] of Object.entries(JSON.parse(prefill.textContent))) {
+      const el = document.querySelector(`[name="${name}"]`);
+      if (el) el.value = value;
+    }
+  }
   // Show a conditional field only when its select says so. Purely visual:
   // the server's coherence check is what actually enforces it.
   for (const box of document.querySelectorAll("[data-show]")) {

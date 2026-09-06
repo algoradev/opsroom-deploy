@@ -128,7 +128,7 @@ if [ "${1:-}" = "--deploy" ]; then
   # submit). Absent token = the unattended path already pulled up front.
   if [ -n "$PULL_TOKEN" ]; then
     note "installing:downloading the product (several GB — the longest step)"
-    printf '%s' "$PULL_TOKEN" | run docker login ghcr.io -u algoradev --password-stdin >/dev/null 2>&1 \
+    printf '%s' "$PULL_TOKEN" | run docker login "$REGISTRY_HOST" -u "${OPSROOM_PULL_USER:-$REGISTRY_NS}" --password-stdin >/dev/null 2>&1 \
       || dfail "docker login failed with the form's token"
     run $DC pull -q >>"$INSTALL_LOG" 2>&1 || dfail "image pull failed — see $INSTALL_LOG"
   fi
@@ -137,7 +137,23 @@ if [ "${1:-}" = "--deploy" ]; then
   run $DC up -d --wait --wait-timeout 900 postgres openfga keycloak vector >/dev/null 2>&1 || dfail "identity plane did not come up"
   note "installing:seeding keycloak"
   run $DC up -d --wait --wait-timeout 600 keycloak-init >/dev/null 2>&1 || true
-  until [ "$(docker inspect "$(run $DC ps -aq keycloak-init)" --format '{{.State.Status}}' 2>/dev/null)" = exited ]; do sleep 2; done
+  # keycloak-init is a one-shot: --wait cannot express "ran to completion",
+  # so poll for exited. BOUNDED, and the exit code is read: an unbounded
+  # loop is a browser parked on this step forever with nothing to show (the
+  # ERR trap never fires for a loop that simply never ends), and a
+  # keycloak-init that exited NON-ZERO used to sail on and fail later,
+  # somewhere less informative.
+  KCI_DEADLINE=$((SECONDS + 900))
+  while :; do
+    KCI_ID=$(run $DC ps -aq keycloak-init 2>/dev/null | head -1 || true)
+    if [ -n "$KCI_ID" ] && [ "$(docker inspect "$KCI_ID" --format '{{.State.Status}}' 2>/dev/null || true)" = exited ]; then
+      KCI_RC=$(docker inspect "$KCI_ID" --format '{{.State.ExitCode}}' 2>/dev/null || echo 1)
+      [ "$KCI_RC" = 0 ] || dfail "keycloak seeding failed (keycloak-init exited $KCI_RC) — see $INSTALL_LOG"
+      break
+    fi
+    [ "$SECONDS" -lt "$KCI_DEADLINE" ] || dfail "keycloak seeding did not finish within 15 minutes — see $INSTALL_LOG"
+    sleep 2
+  done
 
   note "installing:configuring the realm"
   run ./bin/kc-session-lifespans.sh >/dev/null 2>&1 || true
@@ -230,6 +246,7 @@ if [ "${1:-}" = "--fresh" ]; then
     rm -f "$REPO_DIR/.env"
   fi
   rm -rf "$SETUP_DIR"; rm -f "$STATUS_FILE"
+  rm -f /etc/opsroom/versions   # else --upgrade reads the pin of an install that is gone
   tailscale serve reset >/dev/null 2>&1 || true
   if [ -f "${HOME_DIR:-}/.config/sops/age/keys.txt" ]; then
     if [ "${2:-}" = "--and-the-age-key" ]; then

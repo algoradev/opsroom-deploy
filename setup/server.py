@@ -27,12 +27,43 @@ def registry_ok(token):
         return True
     except Exception:
         return False
+# Echoed back on a field error. SECRETS ARE ABSENT BY CONSTRUCTION: no
+# password, token or key is ever written into the returned HTML.
+KEEP = ("admin_user", "backup_bucket", "s3_endpoint", "s3_key",
+        "age_mode", "pass_mode", "invite_mode")
+def form_page(err_html="", values=None):
+    page = FORM.replace("<!--ERR-->", err_html)
+    blob = ""
+    kept = {k: v for k, v in (values or {}).items() if k in KEEP and v}
+    if kept:
+        blob = '<script id="prefill" type="application/json">%s</script>' % (
+            json.dumps(kept).replace("<", "\\u003c"))
+    return page.replace("<!--VALUES-->", blob)
+def started():
+    """Is an install under way (or finished)? The deploy phase SHREDS the
+    answers file early, so its absence does not mean 'nothing is running' —
+    the status file is the durable signal. Without this, a refresh (or a
+    second device on the tailnet) mid-install gets a blank form back, and
+    submitting it would start a second concurrent deploy."""
+    try:
+        return bool(open(STATUS).read().strip())
+    except Exception:
+        return False
 def coherence(f):
     e = []
     if PULLED != "1":
         t = f.get("pull_token", "").strip()
         if not t: e.append("The registry pull token is required — your vendor provides it.")
         elif not registry_ok(t): e.append("The registry rejected that pull token (or it lacks read access). Check it with your vendor.")
+    u = f.get("admin_user", "")
+    if not u:
+        e.append("An administrator username is required.")
+    elif not re.fullmatch(r"[A-Za-z0-9._@-]{2,64}", u):
+        e.append("Administrator username: 2-64 characters, letters, digits and . _ @ - only.")
+    for key, label in (("backup_bucket", "Bucket"), ("s3_key", "Access Key ID"),
+                       ("s3_secret", "Secret Access Key")):
+        if not f.get(key, "").strip():
+            e.append("%s is required." % label)
     if f.get("age_mode") == "restore" and not f.get("age_key", "").startswith("AGE-SECRET-KEY-"): e.append("Restore chosen but no AGE-SECRET-KEY given.")
     if f.get("pass_mode") == "provide" and len(f.get("backup_pass", "")) < 16: e.append("Backup passphrase must be at least 16 characters.")
     if f.get("invite_mode") == "magic_link": e.append("magic_link needs SMTP, which this installer does not configure. Choose temporary password.")
@@ -50,13 +81,19 @@ class H(http.server.BaseHTTPRequestHandler):
             try: s = open(STATUS).read().strip() or "installing:starting"
             except Exception: s = "installing:starting"
             self._send(json.dumps({"status": s}), ctype="application/json"); return
-        self._send(INSTALLING if os.path.exists(ANSWERS) else FORM.replace("<!--ERR-->", ""))
+        self._send(INSTALLING if (os.path.exists(ANSWERS) or started()) else form_page())
     def do_POST(self):
+        if os.path.exists(ANSWERS) or started():
+            self._send(INSTALLING); return          # already submitted — never deploy twice
         n = int(self.headers.get("Content-Length", 0))
         f = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(n).decode()).items()}
+        # Copy-paste drags whitespace along; a token with a trailing newline
+        # is a real typo report, not a bad token. Passwords are NOT stripped.
+        for k in ("pull_token", "admin_user", "backup_bucket", "s3_endpoint", "s3_key", "age_key"):
+            if k in f: f[k] = f[k].strip()
         errs = coherence(f)
         if errs:
-            self._send(FORM.replace("<!--ERR-->", '<div class="err">' + "\n".join(errs) + "</div>"), 400); return
+            self._send(form_page('<div class="err">' + "\n".join(errs) + "</div>", f), 400); return
         if f.get("pass_mode") == "generate": f["backup_pass"] = secrets.token_urlsafe(36)
         with open(ANSWERS, "w") as o: json.dump(f, o)
         os.chmod(ANSWERS, 0o600)
