@@ -1,3 +1,5 @@
 .env
 backups/
 *.log
+__pycache__/
+*.pyc

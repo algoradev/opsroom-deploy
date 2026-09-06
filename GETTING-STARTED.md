@@ -15,7 +15,9 @@ fifteen minutes — most of it unattended.
    `login.tailscale.com/admin/settings/keys` (single-use is fine; it is
    consumed when the server joins).
 3. **Your registry pull token**, provided by your OpsRoom vendor. It is
-   read-only and only lets the server download the product images.
+   read-only and only lets the server download the product images. You
+   paste it into the browser form in step 2 — have it to hand there, not
+   at the terminal.
 4. *(Recommended)* **S3-compatible storage for backups** — a bucket,
    its endpoint URL, and an access key pair (for example Cloudflare
    R2). The setup form asks for these; you can add them later, but an

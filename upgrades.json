@@ -1,4 +1,30 @@
 {
   "_doc": "Breaking-change manifest, hand-edited (the source of truth; no generation step). install.sh --upgrade computes the window between the installed versions and the target and STOPS for confirmation on any entry with breaking:true. Fields: deploy_version, product_tag, schema_head (product alembic), breaking, downgrade_safe_to, notes.",
-  "entries": []
+  "entries": [
+    {
+      "deploy_version": "deploy-v0.1.0",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": null,
+      "notes": "First published pin. 0.1.0 images exist but are NOT consumable (mis-built keycloak theme) \u2014 never pin 0.1.1's predecessor."
+    },
+    {
+      "deploy_version": "deploy-v0.1.1",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": "deploy-v0.1.0",
+      "notes": "Installer/compose only, no product tag move: KEYCLOAK_PUBLIC_URL written, session lifespans re-applied after the full up, readiness gates hardened. No migration ran."
+    },
+    {
+      "deploy_version": "deploy-v0.2.0",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": "deploy-v0.1.1",
+      "notes": "Flow change only, no product tag move: the pull token moves from the terminal to the setup form and the image pull becomes the install's first progress step. No migration ran."
+    }
+  ],
+  "_schema_head_note": "schema_head is null on every entry so far because no entry moves OPSROOM_TAG \u2014 the product alembic head has not changed across these deploy versions. The first entry that moves the tag must record the real head."
 }
