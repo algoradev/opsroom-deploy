@@ -30,7 +30,7 @@ def registry_ok(token):
 # Echoed back on a field error. SECRETS ARE ABSENT BY CONSTRUCTION: no
 # password, token or key is ever written into the returned HTML.
 KEEP = ("admin_user", "backup_bucket", "s3_endpoint", "s3_key",
-        "age_mode", "pass_mode", "invite_mode")
+        "age_mode", "pass_mode", "invite_mode", "distro")
 def form_page(err_html="", values=None):
     page = FORM.replace("<!--ERR-->", err_html)
     blob = ""
@@ -60,6 +60,9 @@ def coherence(f):
         e.append("An administrator username is required.")
     elif not re.fullmatch(r"[A-Za-z0-9._@-]{2,64}", u):
         e.append("Administrator username: 2-64 characters, letters, digits and . _ @ - only.")
+    d = f.get("distro", "")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*@[0-9]+(\.[0-9]+)*|none", d):
+        e.append("Domain package: <name>@<version> (for example healthcare@0.1), or none.")
     for key, label in (("backup_bucket", "Bucket"), ("s3_key", "Access Key ID"),
                        ("s3_secret", "Secret Access Key")):
         if not f.get(key, "").strip():
@@ -89,7 +92,7 @@ class H(http.server.BaseHTTPRequestHandler):
         f = {k: v[0] for k, v in urllib.parse.parse_qs(self.rfile.read(n).decode()).items()}
         # Copy-paste drags whitespace along; a token with a trailing newline
         # is a real typo report, not a bad token. Passwords are NOT stripped.
-        for k in ("pull_token", "admin_user", "backup_bucket", "s3_endpoint", "s3_key", "age_key"):
+        for k in ("pull_token", "admin_user", "backup_bucket", "s3_endpoint", "s3_key", "age_key", "distro"):
             if k in f: f[k] = f[k].strip()
         errs = coherence(f)
         if errs:

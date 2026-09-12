@@ -35,7 +35,7 @@ upgrades.json entry, which keeps this honest).
   the URL appears in ~2 minutes. Unattended path unchanged
   (OPSROOM_PULL_TOKEN / --token-file pulls early, form field hidden).
 
-## 2026-09-06 — deploy-v0.2.1 (PREPARED — not tagged, not pushed)
+## 2026-09-12 — deploy-v0.2.1
 
 - OPSROOM_TAG: 0.1.1 (unchanged)
 - deploy repo: deploy-v0.2.1 (prev: deploy-v0.2.0)
@@ -64,3 +64,29 @@ upgrades.json entry, which keeps this honest).
     where the front half honors $REGISTRY_HOST / $OPSROOM_PULL_USER.
 - upgrades.json: the three shipped deploy versions recorded (all
   breaking:false — no entry has moved OPSROOM_TAG yet).
+- 2026-09-12 — THE RELEASE GATE (product board 150, D9; reports 153/154):
+  product images built after b88df95 REFUSE to start in production unless
+  SESSION_TOKEN_PRIVATE_KEY_B64, MCP_BEARER and OPSROOM_BACKUP_DEST are
+  each set (or declared `none`). The installer never minted the signing
+  key, so every install would have failed at first boot on the next tag.
+  - install.sh: mints the RSA-2048 signing key (base64 PEM, once per
+    instance) into a fresh .env; `--upgrade` and the resume path append
+    the two mintable values to an older .env and STOP on a missing backup
+    destination. Proven here: the minted key loads through asunset_core's
+    exact code path and survives compose's .env parsing byte-for-byte.
+  - install.sh: the doctor is gone (D9 — "there is no doctor"). Final
+    checks and the `--upgrade` result are a three-part gate: compose
+    health, the api's `/healthz` (404 on 0.1.1 images is recorded as
+    "absent", not hidden), and the realm check. The version is recorded
+    AFTER the gate passes. An api that refuses to boot has its first log
+    lines copied into the install log the browser points at.
+  - setup form: one new field, the domain package (`OPSROOM_DISTRO`,
+    board 150 D1), default healthcare@0.1, `none` for a blank instance.
+  - NOT in this release: the object-store credentials (board 150 D3/D7)
+    — only OPSROOM_OBJECT_STORE_BASE exists on the product's main; the
+    form grows those fields when the G5 names land there.
+  - The customer compose is UNCHANGED (still the 0.1.1 shape with the
+    doctor/renderer services present). It is regenerated once, from a
+    product main that has G4, for the release that moves OPSROOM_TAG.
+- tests/proof.sh: what the gate work proves without a fresh box (13
+  checks; needs docker + python3-cryptography).

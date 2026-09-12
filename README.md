@@ -50,7 +50,13 @@ cd ~opsroom/opsroom-deploy && sudo bash install.sh --upgrade
 Order is deliberate: registry auth is validated first; a **database
 snapshot is taken before anything migrates**; `git pull` moves the
 orchestration and the tracked pin (`release.env`); images pull **to
-completion** before any service is touched; the doctor gates the result.
+completion** before any service is touched; then a three-part gate
+(every compose healthcheck healthy, the api's own `/healthz`, the realm
+check) decides whether the new version is **recorded** — a red gate
+leaves `/etc/opsroom/versions` at the previous pin. Before pulling, the
+upgrade also makes sure `.env` carries the configuration newer images
+refuse to boot without (it mints what it can; a missing backup
+destination stops it, since that is your decision).
 `upgrades.json` entries marked breaking stop for your confirmation.
 
 ## Rollback

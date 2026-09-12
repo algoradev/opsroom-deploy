@@ -7,7 +7,7 @@
       "schema_head": null,
       "breaking": false,
       "downgrade_safe_to": null,
-      "notes": "First published pin. 0.1.0 images exist but are NOT consumable (mis-built keycloak theme) \u2014 never pin 0.1.1's predecessor."
+      "notes": "First published pin. 0.1.0 images exist but are NOT consumable (mis-built keycloak theme) — never pin 0.1.1's predecessor."
     },
     {
       "deploy_version": "deploy-v0.1.1",
@@ -24,7 +24,15 @@
       "breaking": false,
       "downgrade_safe_to": "deploy-v0.1.1",
       "notes": "Flow change only, no product tag move: the pull token moves from the terminal to the setup form and the image pull becomes the install's first progress step. No migration ran."
+    },
+    {
+      "deploy_version": "deploy-v0.2.1",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": "deploy-v0.2.0",
+      "notes": "Installer/form only, no product tag move: the release gate for images past product b88df95 (mints SESSION_TOKEN_PRIVATE_KEY_B64, guards the boot trio on --upgrade), the doctor replaced by the compose-health + /healthz + realm gate, and the domain-package (OPSROOM_DISTRO) field. The v0.2.0 form-flow hardening rides along. No migration ran."
     }
   ],
-  "_schema_head_note": "schema_head is null on every entry so far because no entry moves OPSROOM_TAG \u2014 the product alembic head has not changed across these deploy versions. The first entry that moves the tag must record the real head."
+  "_schema_head_note": "schema_head is null on every entry so far because no entry moves OPSROOM_TAG — the product alembic head has not changed across these deploy versions. The first entry that moves the tag must record the real head."
 }

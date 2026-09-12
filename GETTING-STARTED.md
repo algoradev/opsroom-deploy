@@ -61,6 +61,8 @@ for, once:
   There are no default accounts and no seeded users; this is the only
   way in.
 - **Backup storage** — the S3 details from above.
+- **Domain package** — leave the default unless your vendor told you
+  otherwise. It is pinned at install, like the product version.
 - **Recovery keys** — leave both on *Generate* for a first instance.
   They are shown to you **once**, at the end: put them in a password
   manager immediately. The rule is *two places, or nothing* — an

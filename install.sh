@@ -48,6 +48,69 @@ export DEBIAN_FRONTEND=noninteractive
 note() { printf '%s\n' "$1" > "$STATUS_FILE"; }
 
 # ════════════════════════════════════════════════════════════════════════
+# THE GATE — board 150 D9: there is no doctor. The checks live where the
+# failures happen (compose healthchecks, the api's own /healthz, the realm
+# script); this READS them, in that order, and answers yes or no. Used by
+# --deploy (final checks) and --upgrade (before the version is recorded).
+# Needs the caller's run() and $DC. Details go to $INSTALL_LOG.
+# ════════════════════════════════════════════════════════════════════════
+gate() {
+  local bad hz rc=0
+  # 1. every service that declares a healthcheck reports healthy
+  bad=$(run $DC ps --format '{{.Service}} {{.Health}}' 2>>"$INSTALL_LOG" | awk '$2 != "" && $2 != "healthy"') || true
+  if [ -n "$bad" ]; then printf 'gate: unhealthy services:\n%s\n' "$bad" >>"$INSTALL_LOG"; return 1; fi
+  # 2. the api's /healthz — its own dependencies as facts, 503 when a
+  #    configured one fails. Absent (404) on 0.1.1 images: the compose
+  #    healthcheck stands alone there, and that is recorded, not hidden.
+  hz=$(run $DC exec -T opsroom-api python -c '
+import sys, urllib.request as u, urllib.error as e
+try:
+    print(u.urlopen("http://127.0.0.1:8001/healthz", timeout=5).read().decode()[:600])
+except e.HTTPError as x:
+    print(x.read().decode()[:600]); sys.exit(3 if x.code == 404 else 1)
+' 2>>"$INSTALL_LOG") || rc=$?
+  case $rc in
+    0) printf 'gate: healthz ok: %s\n' "$hz" >>"$INSTALL_LOG" ;;
+    3) printf 'gate: healthz absent on this image (pre-0.2.0) — compose health stands alone\n' >>"$INSTALL_LOG" ;;
+    *) printf 'gate: healthz FAILED (%s): %s\n' "$rc" "$hz" >>"$INSTALL_LOG"; return 1 ;;
+  esac
+  # 3. the realm is coherent (and its session lifespans survived the up)
+  run ./bin/realm-doctor.sh >>"$INSTALL_LOG" 2>&1 || { printf 'gate: realm-doctor FAILED\n' >>"$INSTALL_LOG"; return 1; }
+  return 0
+}
+
+# ════════════════════════════════════════════════════════════════════════
+# THE BOOT TRIO — product config, board 150 D9: a production image past
+# b88df95 REFUSES to start unless SESSION_TOKEN_PRIVATE_KEY_B64, MCP_BEARER
+# and OPSROOM_BACKUP_DEST are each set (or declared `none`). A fresh .env
+# gets all three at generation; an OLDER .env (installed before this) gets
+# the two mintable ones appended here, once, before an upgrade can pull an
+# image that would refuse it. The backup destination is never guessed.
+# ════════════════════════════════════════════════════════════════════════
+mint_session_key() {
+  # RSA-2048 PEM, base64 on ONE line (what asunset_core's signer loads).
+  # Minted once per instance: a new key logs every agent session out.
+  local k; k=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 -w0) || true
+  [ "${#k}" -gt 1500 ] || return 1
+  printf '%s' "$k"
+}
+ensure_trio() {   # $1 = path to .env ; returns 1 with a message when a human must decide
+  local envf="$1" k
+  if ! grep -q '^SESSION_TOKEN_PRIVATE_KEY_B64=.' "$envf"; then
+    k=$(mint_session_key) || { echo "could not mint the session signing key (openssl genpkey)"; return 1; }
+    printf 'SESSION_TOKEN_PRIVATE_KEY_B64=%s\n' "$k" >> "$envf"; echo "SESSION_TOKEN_PRIVATE_KEY_B64: minted and appended to $envf"
+  fi
+  if ! grep -q '^MCP_BEARER=.' "$envf"; then
+    printf 'MCP_BEARER=%s\n' "$(openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-48)" >> "$envf"; echo "MCP_BEARER: minted and appended to $envf"
+  fi
+  if ! grep -q '^OPSROOM_BACKUP_DEST=.' "$envf"; then
+    echo "OPSROOM_BACKUP_DEST is unset in $envf — the product refuses to boot without a decision. Set it to s3://<bucket> (plus the OPSROOM_BACKUP_S3_* lines, see .env.example) or, deliberately, to: none"
+    return 1
+  fi
+  return 0
+}
+
+# ════════════════════════════════════════════════════════════════════════
 # DEPLOY PHASE — invoked by the setup server AFTER the form is submitted,
 # detached from any terminal, writing a one-line status the browser polls.
 #   install.sh --deploy <repo_dir> <answers.json> <ts_dns> <ops_user>
@@ -70,11 +133,14 @@ if [ "${1:-}" = "--deploy" ]; then
 
   note "installing:writing configuration"
   ADMIN_USER=$(j admin_user); ADMIN_PASS=$(j admin_pass)
+  DISTRO=$(j distro)
+  SESSION_KEY_B64=$(mint_session_key) || dfail "could not mint the session signing key (openssl genpkey)"
   # Idempotency (contract 141 §5): check-then-act against BOTH .env and
   # volume state. A half-done box resumes or refuses loudly — never
   # regenerates secrets over an initialized database.
   if [ -f .env ] && docker volume inspect opsroom_postgres-data >/dev/null 2>&1; then
     note "installing:resuming with the existing configuration"
+    ensure_trio .env >>"$INSTALL_LOG" 2>&1 || dfail "the existing .env is missing boot configuration — see $INSTALL_LOG"
   elif [ -f .env ]; then
     dfail ".env exists but the database volumes do not — unknown half-state. Run: sudo bash install.sh --fresh"
   else
@@ -100,6 +166,11 @@ if [ "${1:-}" = "--deploy" ]; then
       # authorization store only when enforcing (boot-proof lesson).
       printf 'OPSROOM_ENV=production\nOPSROOM_AUTH_ENFORCE=true\n'
       printf 'INVITE_DELIVERY=%s\nMCP_BEARER=%s\n' "$(j invite_mode)" "$(openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-48)"
+      # Boot trio member 1 of 3 (MCP_BEARER above, OPSROOM_BACKUP_DEST below).
+      printf 'SESSION_TOKEN_PRIVATE_KEY_B64=%s\n' "$SESSION_KEY_B64"
+      # D1 (board 150): the distro is instance identity, pinned at install
+      # like the image tag. `none` = a blank instance, and no line is written.
+      case "$DISTRO" in ""|none) ;; *) printf 'OPSROOM_DISTRO=%s\n' "$DISTRO" ;; esac
       printf 'OPSROOM_BACKUP_DEST=s3://%s\nOPSROOM_BACKUP_S3_ENDPOINT=%s\n' "$(j backup_bucket)" "$(j s3_endpoint)"
       printf 'OPSROOM_BACKUP_S3_ACCESS_KEY_ID=%s\nOPSROOM_BACKUP_S3_SECRET_ACCESS_KEY=%s\n' "$(j s3_key)" "$(j s3_secret)"
       printf 'OPSROOM_BACKUP_PASSPHRASE=%s\nOPSROOM_BACKUP_RETAIN_DAYS=30\n' "$(j backup_pass)"
@@ -173,7 +244,12 @@ if [ "${1:-}" = "--deploy" ]; then
   run ./bin/realm-doctor.sh >/dev/null 2>&1 || dfail "realm is not coherent — check ./bin/realm-doctor.sh"
 
   note "installing:starting the product (pulled images — no build)"
-  run $DC up -d --wait --wait-timeout 900 >/dev/null 2>&1 || dfail "the stack did not come up healthy"
+  if ! run $DC up -d --wait --wait-timeout 900 >>"$INSTALL_LOG" 2>&1; then
+    # An api that REFUSES to boot (missing config, D9) says so on its first
+    # lines — put them where the browser is already pointing.
+    run $DC logs --tail 40 opsroom-api >>"$INSTALL_LOG" 2>&1 || true
+    dfail "the stack did not come up healthy — see $INSTALL_LOG"
+  fi
 
   # The full up RE-RUNS the keycloak-init one-shot, which RESETS session
   # lifespans to the shipped 900s on every run (the known regression the
@@ -203,12 +279,8 @@ if [ "${1:-}" = "--deploy" ]; then
   run ./backup/backup.sh >>"$INSTALL_LOG" 2>&1 || note "installing:first backup FAILED (continuing — fix backups after login)"
 
   note "installing:final checks"
-  if ! run $DC --profile ops run --rm opsroom-doctor >>"$INSTALL_LOG" 2>&1; then
-    # Doctor is honest: pre-first-login it may report the org warns; a
-    # FAIL beyond that is real. Surface it, do not bury it.
-    note "installing:doctor reported problems — the instance is up; review $INSTALL_LOG after login"
-    sleep 2
-  fi
+  # No green behind a failure: the handover means the gate passed.
+  gate || dfail "final checks failed (compose health / api healthz / realm) — see $INSTALL_LOG"
   mkdir -p /etc/opsroom
   { grep '^OPSROOM_TAG=' release.env; echo "DEPLOY_COMMIT=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"; } > /etc/opsroom/versions
 
@@ -299,11 +371,14 @@ PYEOF
     echo "    ! your .env pins OPSROOM_TAG and OVERRIDES the tracked release pin — remove it unless this is a deliberate rollback hold"
   fi
   run git pull --ff-only
+  ensure_trio .env || die "fix .env, then re-run --upgrade (nothing was pulled or recreated)"
   say "5/6 pull to completion, then recreate"
   run $DC pull -q
-  run $DC up -d --wait --wait-timeout 900
-  say "6/6 doctor + record"
-  run $DC --profile ops run --rm opsroom-doctor || echo "    ! doctor reported problems — investigate before calling this upgrade done"
+  run $DC up -d --wait --wait-timeout 900 || { run $DC logs --tail 40 opsroom-api || true; die "the stack did not come up healthy after the upgrade — version NOT recorded. Rollback: set OPSROOM_TAG=<previous> in .env (see versions.md), then: $DC pull && $DC up -d"; }
+  say "6/6 gate, then record"
+  # The version is recorded AFTER the gate passes — a red gate leaves
+  # /etc/opsroom/versions at the previous pin, which is the truth.
+  gate || die "the gate FAILED after the upgrade (see $INSTALL_LOG) — version NOT recorded. Rollback: set OPSROOM_TAG=<previous> in .env (see versions.md), then: $DC pull && $DC up -d"
   { grep '^OPSROOM_TAG=' release.env; echo "DEPLOY_COMMIT=$(git rev-parse --short HEAD)"; } > /etc/opsroom/versions
   docker image prune -f >/dev/null   # dangling only; OLD TAGGED images stay = your rollback
   ok "upgraded. Rollback: set OPSROOM_TAG=<previous> in .env (see versions.md), then: $DC pull && $DC up -d"

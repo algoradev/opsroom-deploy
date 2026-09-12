@@ -97,6 +97,14 @@
     </fieldset>
 
     <fieldset>
+      <legend>Domain package</legend>
+      <label for="distro">Distro</label>
+      <input id="distro" name="distro" required value="healthcare@0.1" pattern="[a-z0-9][a-z0-9-]*@[0-9]+(\.[0-9]+)*|none" autocomplete="off">
+      <p class="why">The domain package this instance runs, pinned at install like the
+      product version. Leave the default unless your vendor gave you another; <code>none</code> for a blank instance.</p>
+    </fieldset>
+
+    <fieldset>
       <legend>Invites</legend>
       <label for="invite_mode">Delivery</label>
       <select id="invite_mode" name="invite_mode">
