@@ -90,3 +90,71 @@ upgrades.json entry, which keeps this honest).
     product main that has G4, for the release that moves OPSROOM_TAG.
 - tests/proof.sh: what the gate work proves without a fresh box (13
   checks; needs docker + python3-cryptography).
+
+## 2026-09-15 — deploy-v0.2.2
+
+- OPSROOM_TAG: 0.1.1 (unchanged — still no image release past b88df95)
+- deploy repo: deploy-v0.2.2 (prev: deploy-v0.2.1)
+
+**Backups became restorable.** Three gaps, each of which made a backup that
+reported success and could not be used:
+
+- **The roles file.** `pg_dump` of one database carries every `GRANT … TO
+  web_anon` and no `CREATE ROLE`, so on a fresh cluster the replay stops and
+  no rows land. Reproduced on this machine and fixed:
+  `tests/proof-restore-order.sh` replays a dump on two fresh clusters, one
+  without the roles (fails, restores nothing) and one with them loaded first
+  (clean under ON_ERROR_STOP, rows and schema revision read back).
+  `backup.sh` ships `product-roles.sql.gpg`.
+- **The sealed configuration (`env.age`).** The databases only accept the
+  passwords that created them, and those live only in `.env` on the host —
+  in no artifact. So a backup without it restored data that nothing could
+  connect to. `.env` is now sealed to the instance's **age** key and shipped
+  beside the dumps. Not the backup passphrase: the age key is the one secret
+  deliberately absent from the backup, so the bucket alone is never enough.
+- **The drill never replayed the product dump.** It decrypted the one
+  artifact holding rows you cannot rebuild and stopped, so a PASS said
+  nothing about the product database. It now loads roles, replays under
+  ON_ERROR_STOP, reads back `alembic_version`, `registry.sources` and
+  `registry.projects`, and proves the seal opens with this box's key.
+
+A production backup with no destination used to print "Nothing to do." and
+exit 0 — a nightly timer reporting success on an instance with no backups.
+It now refuses, with the cure. The destination holds **7** objects.
+
+**`install.sh --restore` exists.** Same front half as an install (tools,
+tailnet, orchestration, browser), a different form: which backup, the
+passphrase, the age key. Then, in this order — configuration first, host
+URLs repointed at the new machine, image tag pinned to what the backup was
+taken with, **databases only** up before the replay (Keycloak and OpenFGA
+initialise their own schemas the moment they boot), roles before the product
+dump, and the restored rows READ BACK before anything is handed over. It
+refuses over a living instance. `opsroom-init` is not run: the organization
+came back with the data.
+
+**`MCP_BEARER=none` is refused by the installer (D13).** The MCP server
+reads that variable *as* the shared secret, so `none` installs a live door
+key whose value is the word "none". deploy-v0.2.1's `.env.example` told
+operators `none` was valid for all three boot values; it was wrong, and a
+hand-edited `.env` that took the advice is now caught before boot.
+
+**File storage is asked for (D3/D7):** the five `OPSROOM_OBJECT_STORE_*`
+values, as a second bucket with its own token. The form refuses a shared
+bucket or a shared token — backups are pruned on a timer and uploaded files
+are not.
+
+**The configuration pre-check runs through the image** (`python -m
+opsroom.config check --process`), on install, restore and upgrade. The
+customer host has no venv, so the image is the only thing carrying the
+manifest, and `--process` asks only the rows a container can answer. On the
+upgrade it runs **after the pull** and before anything is recreated, so a
+release that adds a required row stops the upgrade with the instance still
+up. An image with no manifest reports "cannot pre-check" — never a pass.
+
+- The doctor gate in `--upgrade` was already the compose-health + `/healthz`
+  + realm triple (deploy-v0.2.1); the handover is now one shared function
+  instead of two copies of an order that was measured twice.
+- tests/proof.sh: 48 checks. tests/proof-restore-order.sh: 11 more.
+- NOT proven here: a fresh-box run of the restore, which needs a real
+  backup and a real box. That is the plan's step 8b, and it is the one that
+  turns this from built to true.

@@ -61,6 +61,10 @@ for, once:
   There are no default accounts and no seeded users; this is the only
   way in.
 - **Backup storage** — the S3 details from above.
+- **File storage** — a **second** bucket, with its **own** token, for the
+  files people upload. It must not be the backup bucket: backups are
+  deleted on a schedule and uploaded files never are, so one bucket for
+  both eventually deletes people's work. The form refuses if they match.
 - **Domain package** — leave the default unless your vendor told you
   otherwise. It is pinned at install, like the product version.
 - **Recovery keys** — leave both on *Generate* for a first instance.
@@ -73,6 +77,30 @@ Submit, and watch: the page shows install progress live, then drops you
 onto your instance's login page by itself. Log in with the
 administrator account you just created — the first screen asks you to
 name your organization, and then you are in your workspace.
+
+## If you ever have to rebuild it
+
+On a new machine, with the backup bucket still there:
+
+```
+curl -fsSL <hosted-url>/install.sh | sudo bash -s -- --restore
+```
+
+It asks the same one question in the terminal, then the browser asks which
+backup and for **two things from your password manager**: the backup
+passphrase and the AGE-SECRET-KEY. Everything else — every password, the
+realm, your organization, the schema version — comes back out of the backup
+exactly as it was. The instance keeps the version it was running; upgrade it
+afterwards when you choose to.
+
+Neither key is in the backup, and that is deliberate: whoever gets hold of
+your bucket still has nothing without them. Which is also why an instance
+whose keys exist in only one place is one accident from unrecoverable — the
+rule on the form is *two places, or nothing*, and it is not decoration.
+
+Rehearse it before you need it: `./backup/restore-drill.sh` restores your
+newest backup into throwaway containers, reads the rows back, and tells you
+what it found. A backup nobody has restored is a hope.
 
 ## What you end up with
 

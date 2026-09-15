@@ -117,7 +117,7 @@ shared.
 
 ## Files
 
-`install.sh` — install / `--upgrade` / `--fresh`. `docker-compose.yml` —
+`install.sh` — install / `--upgrade` / `--restore` / `--fresh`. `docker-compose.yml` —
 the whole stack, images only (generated in the product repo; do not
 hand-edit). `release.env` — the tracked product pin. `.env.example` —
 every knob, inert. `config/` — everything the stack mounts. `setup/` —

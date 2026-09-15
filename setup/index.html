@@ -34,9 +34,17 @@
 </head>
 <body>
 <main>
+  <!--H-INSTALL-->
   <h1>OpsRoom — first-run setup</h1>
   <p class="sub">Everything the deployment needs, once. <b>It will not ask for your
   organization's name</b> — that is the product's question, answered after you log in.</p>
+  <!--/H-INSTALL-->
+  <!--H-RESTORE-->
+  <h1>OpsRoom — restore</h1>
+  <p class="sub">This rebuilds an instance from its backup onto this machine.
+  <b>It will not ask for an administrator account or a domain package</b> — those come
+  back from the backup, with every other setting, exactly as they were.</p>
+  <!--/H-RESTORE-->
   <!--ERR-->
   <form method="post" action="/setup">
     <!--REGISTRY-->
@@ -49,6 +57,7 @@
       the first step of the install, on the progress page.</p>
     </fieldset>
     <!--/REGISTRY-->
+    <!--ADMIN-->
     <fieldset>
       <legend>Administrator</legend>
       <label for="admin_user">Username</label>
@@ -58,6 +67,7 @@
       <p class="why">The platform admin — the account that creates the organization.
       No seeded <code>alice</code>; no password in the repo.</p>
     </fieldset>
+    <!--/ADMIN-->
 
     <fieldset>
       <legend>Backups (Cloudflare R2, or any S3-compatible bucket)</legend>
@@ -69,9 +79,10 @@
       <input id="s3_key" name="s3_key" required autocomplete="off">
       <label for="s3_secret">Secret Access Key</label>
       <input id="s3_secret" name="s3_secret" type="password" required autocomplete="off">
-      <p class="why">Object Read &amp; Write, scoped to the bucket.</p>
+      <p class="why">Object Read &amp; Write, scoped to the bucket.<!--WHY-RESTORE--></p>
     </fieldset>
 
+    <!--RECOVERY-->
     <fieldset>
       <legend>Recovery keys — two places, or nothing</legend>
       <label for="age_mode">Age key</label>
@@ -95,7 +106,48 @@
       <p class="why">Both are shown once, after install, to put in a password manager.
       The last instance was lost because each existed in one place.</p>
     </fieldset>
+    <!--/RECOVERY-->
 
+    <!--OBJSTORE-->
+    <fieldset>
+      <legend>File storage (a SECOND bucket, with its own token)</legend>
+      <label for="obj_base">Bucket for uploaded files</label>
+      <input id="obj_base" name="obj_base" required placeholder="s3://opsroom-data">
+      <label for="obj_endpoint">Endpoint URL</label>
+      <input id="obj_endpoint" name="obj_endpoint" type="url" required placeholder="https://&lt;account-id&gt;.r2.cloudflarestorage.com">
+      <label for="obj_key">Access Key ID</label>
+      <input id="obj_key" name="obj_key" required autocomplete="off">
+      <label for="obj_secret">Secret Access Key</label>
+      <input id="obj_secret" name="obj_secret" type="password" required autocomplete="off">
+      <label for="obj_region">Region</label>
+      <input id="obj_region" name="obj_region" value="auto" required autocomplete="off">
+      <p class="why">Where the files people upload are kept. It must be a
+      <b>different bucket with a different token</b> from your backups: the backup
+      token may read this one, never the other way round, so a mistake on either
+      side cannot reach the other. <code>auto</code> is right for Cloudflare R2;
+      AWS wants a real region; MinIO ignores it.</p>
+    </fieldset>
+    <!--/OBJSTORE-->
+
+    <!--RESTORE-->
+    <fieldset>
+      <legend>The backup to restore</legend>
+      <label for="stamp">Which one</label>
+      <input id="stamp" name="stamp" autocomplete="off" placeholder="leave empty for the most recent">
+      <p class="why">A timestamp like <code>20260913T025705Z</code>, as listed in your
+      bucket. Empty means the newest one there.</p>
+      <label for="backup_pass">Backup passphrase</label>
+      <input id="backup_pass" name="backup_pass" type="password" autocomplete="off" required>
+      <label for="age_key">AGE-SECRET-KEY</label>
+      <input id="age_key" name="age_key" type="password" autocomplete="off" required placeholder="AGE-SECRET-KEY-1…">
+      <p class="why">Both from your password manager. The passphrase opens the database
+      dumps; the age key opens the instance's own configuration, which is the half that
+      makes the restored databases usable. Neither is in the backup — that is deliberate,
+      and it is why the bucket alone is not enough to read your instance.</p>
+    </fieldset>
+    <!--/RESTORE-->
+
+    <!--DISTRO-->
     <fieldset>
       <legend>Domain package</legend>
       <label for="distro">Distro</label>
@@ -103,7 +155,9 @@
       <p class="why">The domain package this instance runs, pinned at install like the
       product version. Leave the default unless your vendor gave you another; <code>none</code> for a blank instance.</p>
     </fieldset>
+    <!--/DISTRO-->
 
+    <!--INVITES-->
     <fieldset>
       <legend>Invites</legend>
       <label for="invite_mode">Delivery</label>
@@ -112,8 +166,9 @@
         <option value="magic_link">Emailed link (needs SMTP — not configured here)</option>
       </select>
     </fieldset>
+    <!--/INVITES-->
 
-    <button type="submit">Install</button>
+    <button type="submit"><!--SUBMIT-->Install</button>
   </form>
 </main>
 <!--VALUES-->

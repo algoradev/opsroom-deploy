@@ -305,25 +305,35 @@ if git clone -q "$WORK/dbt-test.bundle" "$WORK/clone" 2>/dev/null; then
   [ "$HAVE" = "$WANT" ] && ok "bundle clones, HEAD matches the manifest (${HAVE:0:8})" \
     || bad "bundle HEAD ${HAVE:0:8} != manifest ${WANT:0:8}"
   ok "$(git -C "$WORK/clone" rev-list --count HEAD) commits of orchestration recovered"
-  # THE CONFIG IS NOT IN HERE, AND THAT IS THE GAP, NOT A FAILURE OF THIS
-  # BACKUP. The product repo seals `.env.enc` into its bundle, so a restored
-  # checkout plus the age key rebuilds the configuration. The pull path ships
-  # no seal yet (report 155 §4: it lands with the role split's second
-  # password), so on this path `.env` is yours to hold. A `bad` here would be
-  # a permanent red for a gap no operator can close — it is said once, plainly.
-  if [ -s "$WORK/clone/.env.enc" ]; then
-    if sops --decrypt --input-type dotenv --output-type dotenv "$WORK/clone/.env.enc" 2>/dev/null | grep -q "OPSROOM_BACKUP_DEST"; then
-      ok "recovered .env.enc DECRYPTS — the config recovery chain is real"
-    else
-      bad ".env.enc recovered but did not decrypt (age key missing or rotated?)"
-    fi
-  else
-    printf '    - the bundle carries no sealed .env: on this path the configuration is\n'
-    printf '      NOT in the backup. Keep .env (or its values) in your password manager —\n'
-    printf '      a restore needs the passphrase and the age key from outside the backup.\n'
-  fi
 else
   bad "bundle did not clone"
+fi
+
+echo "==> 5b/6 the sealed configuration (the half a restore cannot do without)"
+# NOT "does the file exist" — does THIS BOX's age key open it, and is what
+# comes out an OpsRoom .env. A seal that exists and does not open is worse
+# than no seal: it reads as a recovery path until the day you need one.
+if aws s3 cp "${DEST%/}/$STAMP/env.age" "$WORK/env.age" --endpoint-url "$EP" >/dev/null 2>&1 && [ -s "$WORK/env.age" ]; then
+  AGE_KEYFILE="$HOME/.config/sops/age/keys.txt"
+  if [ ! -r "$AGE_KEYFILE" ]; then
+    bad "env.age is in the backup but there is no age key at $AGE_KEYFILE to open it"
+  elif age -d -i "$AGE_KEYFILE" "$WORK/env.age" > "$WORK/env.recovered" 2>/dev/null && [ -s "$WORK/env.recovered" ]; then
+    n=$(grep -c '^[A-Z_]*=' "$WORK/env.recovered")
+    if grep -q '^APP_DB_PASSWORD=' "$WORK/env.recovered" && grep -q '^OPSROOM_BACKUP_DEST=' "$WORK/env.recovered"; then
+      ok "env.age DECRYPTS with this box's age key — $n settings recovered, credentials included"
+      # The restore rewrites the host-specific URLs; everything else must be here.
+      for k in KEYCLOAK_API_CLIENT_SECRET APP_DB_PASSWORD KC_DB_PASSWORD FGA_DB_PASSWORD POSTGRES_SUPERUSER_PASSWORD; do
+        grep -q "^$k=." "$WORK/env.recovered" || bad "the recovered configuration has no $k — the restored databases would refuse their own services"
+      done
+    else
+      bad "env.age decrypted but does not look like an OpsRoom .env ($n settings)"
+    fi
+    shred -u "$WORK/env.recovered" 2>/dev/null || rm -f "$WORK/env.recovered"
+  else
+    bad "env.age did NOT decrypt — wrong age key, or it was rotated after this backup"
+  fi
+else
+  bad "this backup carries no env.age — it restores DATA but not the CREDENTIALS the data needs. install.sh --restore will refuse it; take a fresh backup while the instance still runs."
 fi
 
 echo "==> 6/6  source bytes (the mirror, verified against its own names)"

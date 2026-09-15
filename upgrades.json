@@ -32,6 +32,14 @@
       "breaking": false,
       "downgrade_safe_to": "deploy-v0.2.0",
       "notes": "Installer/form only, no product tag move: the release gate for images past product b88df95 (mints SESSION_TOKEN_PRIVATE_KEY_B64, guards the boot trio on --upgrade), the doctor replaced by the compose-health + /healthz + realm gate, and the domain-package (OPSROOM_DISTRO) field. The v0.2.0 form-flow hardening rides along. No migration ran."
+    },
+    {
+      "deploy_version": "deploy-v0.2.2",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": "deploy-v0.2.1",
+      "notes": "Backups and restore only, no product tag move. backup.sh ships the product roles file and the age-sealed .env (7 objects, was 5) and refuses a production instance with no destination; the drill replays the product dump under ON_ERROR_STOP and proves the seal opens. install.sh --restore is implemented. MCP_BEARER=none is refused (D13). The five OPSROOM_OBJECT_STORE_* values are collected. The config pre-check runs through the image on all three paths. NOTE: a backup taken before this version carries no env.age, so --restore refuses it by name — take a fresh backup after upgrading. No migration ran."
     }
   ],
   "_schema_head_note": "schema_head is null on every entry so far because no entry moves OPSROOM_TAG — the product alembic head has not changed across these deploy versions. The first entry that moves the tag must record the real head."

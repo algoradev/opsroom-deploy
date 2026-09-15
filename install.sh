@@ -17,6 +17,7 @@
 #
 # Other modes:
 #   sudo bash install.sh --upgrade    # git pull + pull + up, gated by upgrades.json
+#   sudo bash install.sh --restore    # rebuild an instance from its backup (same browser flow)
 #   sudo bash install.sh --fresh      # wipe THIS project (containers+volumes+config) for a clean re-run
 #
 # The product arrives as pulled, signed images pinned by release.env.
@@ -80,9 +81,52 @@ except e.HTTPError as x:
 }
 
 # ════════════════════════════════════════════════════════════════════════
+# CONFIG PRE-CHECK — the manifest, asked THROUGH THE IMAGE (153 item 3).
+# The customer host has no checkout and no venv, so the image is the only
+# thing that carries the manifest; `--process` asks only the rows the
+# container can answer, because the backup token and passphrase are the
+# HOST's and are absent inside the API by design (D3). Without this the
+# first sign of a gap is the API refusing to boot.
+#
+# THREE ANSWERS, NOT TWO. An image that predates the manifest cannot be
+# asked, and that is reported as "cannot pre-check" — never as a pass,
+# which is the wording up.sh uses for the same situation.
+# ════════════════════════════════════════════════════════════════════════
+config_precheck() {
+  local out rc=0
+  out=$(run $DC run --rm --no-deps opsroom-api python -m opsroom.config check --process 2>&1) || rc=$?
+  printf 'config check --process (rc=%s):\n%s\n' "$rc" "$out" >>"$INSTALL_LOG"
+  case "$out" in
+    *"CONFIG REFUSED"*|*"CONFIG INCOMPLETE"*)
+      CONFIG_GAPS=$(printf '%s\n' "$out" | grep '^✗' | head -3 | tr '\n' ' ')
+      return 1 ;;
+    *"every gated feature is set"*) return 0 ;;
+    *) printf 'config check: this image carries no config manifest — cannot pre-check, NOT a pass\n' >>"$INSTALL_LOG"
+       return 0 ;;
+  esac
+}
+
+# ════════════════════════════════════════════════════════════════════════
+# HANDOVER — the browser is watching one URL; at this moment it must stop
+# being the setup server and start being the product. ORDER MATTERS
+# (measured, twice): kill the setup server by ITS OWN pid, reset serve, then
+# point :443 at the product. Shared by the install and the restore, because
+# a second copy of this is a second place for the order to rot.
+# ════════════════════════════════════════════════════════════════════════
+handover() {
+  if [ -r "$SETUP_DIR/server.pid" ]; then kill "$(cat "$SETUP_DIR/server.pid")" 2>/dev/null || true; fi
+  pkill -f "$SETUP_DIR/server.py" 2>/dev/null || true
+  sleep 1
+  tailscale serve reset >/dev/null 2>&1 || true
+  tailscale serve --bg --https=443 localhost:5173 >/dev/null 2>&1 || true
+}
+
+# ════════════════════════════════════════════════════════════════════════
 # THE BOOT TRIO — product config, board 150 D9: a production image past
 # b88df95 REFUSES to start unless SESSION_TOKEN_PRIVATE_KEY_B64, MCP_BEARER
-# and OPSROOM_BACKUP_DEST are each set (or declared `none`). A fresh .env
+# and OPSROOM_BACKUP_DEST are each set. Only OPSROOM_BACKUP_DEST may be
+# declared off with `none`; the bearer REFUSES that word in every
+# environment (D13) and the signing key has no meaningful off state. A fresh .env
 # gets all three at generation; an OLDER .env (installed before this) gets
 # the two mintable ones appended here, once, before an upgrade can pull an
 # image that would refuse it. The backup destination is never guessed.
@@ -100,6 +144,19 @@ ensure_trio() {   # $1 = path to .env ; returns 1 with a message when a human mu
     k=$(mint_session_key) || { echo "could not mint the session signing key (openssl genpkey)"; return 1; }
     printf 'SESSION_TOKEN_PRIVATE_KEY_B64=%s\n' "$k" >> "$envf"; echo "SESSION_TOKEN_PRIVATE_KEY_B64: minted and appended to $envf"
   fi
+  # MCP_BEARER HAS NO OFF-SWITCH, AND `none` IS REFUSED BY NAME (D13). The
+  # MCP server reads this variable AS the shared secret, so `MCP_BEARER=none`
+  # does not turn admission off — it installs a live door key whose value is
+  # the word "none", admits anything presenting it, and carries no identity.
+  # An earlier version of this file told operators `none` was a valid choice
+  # for all three boot values; it is not, and a hand-edited .env that took
+  # that advice is caught here rather than at a boot refusal that only says
+  # the value was refused.
+  case "$(grep '^MCP_BEARER=' "$envf" | head -1 | cut -d= -f2-)" in
+    none|log)
+      echo "MCP_BEARER is set to a word the MCP server would use AS THE SECRET — 'none' does not disable authentication, it installs a door key whose value is that word. Remove the line (this installer will mint a real secret) or set one yourself."
+      return 1 ;;
+  esac
   if ! grep -q '^MCP_BEARER=.' "$envf"; then
     printf 'MCP_BEARER=%s\n' "$(openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-48)" >> "$envf"; echo "MCP_BEARER: minted and appended to $envf"
   fi
@@ -118,7 +175,7 @@ ensure_trio() {   # $1 = path to .env ; returns 1 with a message when a human mu
 # boot proof that ran it (product repo, reports/142 OUTCOME).
 # ════════════════════════════════════════════════════════════════════════
 if [ "${1:-}" = "--deploy" ]; then
-  REPO_DIR="$2"; ANSWERS="$3"; TS_DNS="$4"; OPS_USER="${5:-opsroom}"
+  REPO_DIR="$2"; ANSWERS="$3"; TS_DNS="$4"; OPS_USER="${5:-opsroom}"; DEPLOY_MODE="${6:-install}"
   HOME_DIR=$(getent passwd "$OPS_USER" | cut -d: -f6)
   cd "$REPO_DIR"
   dfail() { note "error:$1"; exit 1; }
@@ -130,6 +187,204 @@ if [ "${1:-}" = "--deploy" ]; then
   # release.env (tracked pin) first, .env (yours) second — later wins.
   DC="docker compose --env-file release.env --env-file .env"
   rnd() { openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-32; }
+
+  # ══════════════════════════════════════════════════════════════════════
+  # RESTORE — rebuild an instance from its backup onto this machine.
+  #
+  # THE ORDER IS THE WHOLE DESIGN, and each step is placed where it is
+  # because of something that breaks otherwise:
+  #   configuration FIRST, because the databases only accept the passwords
+  #     that created them (a freshly generated .env cannot start the stack
+  #     it just restored);
+  #   the host URLs rewritten, because the backup names a machine that is
+  #     gone and the API validates tokens against an issuer the browser
+  #     must also see;
+  #   the image tag pinned to what the backup was taken with, because the
+  #     dumps carry that version's schema;
+  #   DATABASES ONLY up before the replay, because Keycloak and OpenFGA
+  #     initialise their own schemas the moment they boot;
+  #   read the restored rows back BEFORE handing over, because a restore
+  #     that reports success over an empty realm is the failure this whole
+  #     path exists to prevent.
+  # ══════════════════════════════════════════════════════════════════════
+  if [ "$DEPLOY_MODE" = restore ]; then
+    note "restoring:reading the backup"
+    BUCKET=$(j backup_bucket); S3EP=$(j s3_endpoint)
+    PASSPHRASE=$(j backup_pass); AGEKEY=$(j age_key); STAMP=$(j stamp)
+    PULL_TOKEN=$(j pull_token)
+    export AWS_ACCESS_KEY_ID="$(j s3_key)" AWS_SECRET_ACCESS_KEY="$(j s3_secret)"
+    export AWS_DEFAULT_REGION=auto
+    DEST="s3://$BUCKET"
+
+    # The age key lands first: it is the one input nothing else substitutes.
+    AGE_DIR="$HOME_DIR/.config/sops/age"; mkdir -p "$AGE_DIR"
+    ( umask 077; printf '%s\n' "$AGEKEY" > "$AGE_DIR/keys.txt" )
+    chown -R "$OPS_USER:$OPS_USER" "$HOME_DIR/.config"
+    shred -u "$ANSWERS" 2>/dev/null || rm -f "$ANSWERS"
+
+    if [ -z "$STAMP" ]; then
+      STAMP=$(aws s3 ls "${DEST%/}/" --endpoint-url "$S3EP" 2>/dev/null \
+              | awk '{print $2}' | tr -d '/' | grep -E '^[0-9]{8}T' | sort | tail -1)
+      [ -n "$STAMP" ] || dfail "no backups found at $DEST — check the bucket name, the endpoint and the keys"
+    fi
+    note "restoring:reading $STAMP"
+
+    # DOWNLOAD EVERYTHING FIRST. A restore that fails partway through its
+    # downloads has already begun replacing a database with nothing to
+    # finish the job.
+    W="$REPO_DIR/.restore-work.$$"; mkdir -p "$W"; chmod 700 "$W"
+    for f in env.age MANIFEST.txt identity-all.sql.gpg product-opsroom.sql.gpg \
+             product-roles.sql.gpg opsroom-home.tar.gz.gpg; do
+      aws s3 cp "${DEST%/}/$STAMP/$f" "$W/$f" --endpoint-url "$S3EP" >/dev/null 2>&1 || true
+    done
+    [ -s "$W/identity-all.sql.gpg" ] || dfail "$STAMP carries no identity dump — that is not a complete backup"
+    [ -s "$W/product-opsroom.sql.gpg" ] || dfail "$STAMP carries no product dump — that is not a complete backup"
+    [ -s "$W/env.age" ] || dfail "$STAMP carries no sealed configuration (env.age), so its databases cannot be reached: a dump re-creates the roles with their ORIGINAL passwords and the realm keeps its original client secret, neither of which a new install can guess. Take a fresh backup while the old instance still runs, or restore this one by hand with its original .env."
+
+    note "restoring:recovering the configuration"
+    age -d -i "$AGE_DIR/keys.txt" "$W/env.age" > "$REPO_DIR/.env" 2>/dev/null \
+      || dfail "the age key did not open this backup's configuration — wrong key, or it was rotated after $STAMP was taken"
+    grep -q '^APP_DB_PASSWORD=.' "$REPO_DIR/.env" \
+      || dfail "what the age key opened is not an OpsRoom configuration"
+    chown "$OPS_USER:$OPS_USER" "$REPO_DIR/.env"; chmod 600 "$REPO_DIR/.env"
+
+    # THE HOST MOVED. Every URL naming the old box must name this one, or the
+    # API validates tokens against an issuer the browser never sees — the 401
+    # found live on the first pull-path login, 2026-08-30.
+    python3 - "$REPO_DIR/.env" "$TS_DNS" <<'PYEOF' || dfail "could not rewrite the host URLs in the recovered configuration"
+import sys
+path, dns = sys.argv[1], sys.argv[2]
+new = {"TAILSCALE_HOST": dns,
+       "OPSROOM_PUBLIC_ORIGIN": "https://" + dns,
+       "OPSROOM_PUBLIC_URL": "https://" + dns,
+       "KEYCLOAK_PUBLIC_URL": "https://" + dns + "/auth"}
+out, seen = [], set()
+for line in open(path):
+    key = line.split("=", 1)[0].strip()
+    if key in new:
+        out.append("%s=%s\n" % (key, new[key])); seen.add(key)
+    else:
+        out.append(line)
+for key, value in new.items():
+    if key not in seen:
+        out.append("%s=%s\n" % (key, value))
+open(path, "w").writelines(out)
+PYEOF
+
+    # PIN THE TAG THE BACKUP WAS TAKEN WITH. The dumps carry that version's
+    # schema; starting newer code over them asks it to read a database its
+    # migrations have not reached. A restore REPRODUCES the instance;
+    # `--upgrade` is what moves it forward, and it warns about this pin.
+    RTAG=$(grep -E '^product_tag:' "$W/MANIFEST.txt" 2>/dev/null | awk '{print $2}')
+    if [ -n "$RTAG" ]; then
+      if grep -q '^OPSROOM_TAG=' "$REPO_DIR/.env"; then
+        sed -i "s|^OPSROOM_TAG=.*|OPSROOM_TAG=$RTAG|" "$REPO_DIR/.env"
+      else
+        printf 'OPSROOM_TAG=%s\n' "$RTAG" >> "$REPO_DIR/.env"
+      fi
+    else
+      RTAG=$(grep '^OPSROOM_TAG=' "$REPO_DIR/release.env" | cut -d= -f2)
+      printf 'restore: the backup names no product version; using the current release (%s)\n' "$RTAG" >>"$INSTALL_LOG"
+    fi
+    ensure_trio "$REPO_DIR/.env" >>"$INSTALL_LOG" 2>&1 \
+      || dfail "the recovered configuration is missing boot values — see $INSTALL_LOG"
+    SU=$(grep '^POSTGRES_SUPERUSER=' "$REPO_DIR/.env" | cut -d= -f2)
+    [ -n "$SU" ] || dfail "the recovered configuration names no POSTGRES_SUPERUSER"
+
+    note "restoring:downloading the product (several GB — the longest step)"
+    printf '%s' "$PULL_TOKEN" | run docker login "$REGISTRY_HOST" -u "${OPSROOM_PULL_USER:-$REGISTRY_NS}" --password-stdin >/dev/null 2>&1 \
+      || dfail "docker login failed with the form's token"
+    run $DC pull -q >>"$INSTALL_LOG" 2>&1 || dfail "image pull failed — see $INSTALL_LOG"
+
+    note "restoring:starting the databases (and nothing else yet)"
+    run $DC up -d --wait --wait-timeout 600 postgres opsroom-postgres >>"$INSTALL_LOG" 2>&1 \
+      || dfail "the database containers did not come up — see $INSTALL_LOG"
+
+    note "restoring:decrypting"
+    for f in identity-all.sql product-opsroom.sql product-roles.sql opsroom-home.tar.gz; do
+      [ -s "$W/$f.gpg" ] || continue
+      gpg --batch --yes --quiet --pinentry-mode loopback --passphrase "$PASSPHRASE" \
+          -o "$W/$f" --decrypt "$W/$f.gpg" 2>/dev/null \
+        || dfail "$f did not decrypt — the backup passphrase does not match $STAMP"
+    done
+
+    note "restoring:the identity plane (realm, grants, organizations)"
+    # NOISY BY NATURE and judged by CONTENT, exactly as the drill judges it:
+    # the databases and roles already exist (the postgres init created them
+    # from the recovered configuration), so the dump's CREATE statements warn.
+    run $DC exec -T postgres psql -U "$SU" -d postgres -q < "$W/identity-all.sql" >>"$INSTALL_LOG" 2>&1 || true
+
+    note "restoring:the product plane (roles first, then the rows)"
+    if [ -s "$W/product-roles.sql" ]; then
+      run $DC exec -T opsroom-postgres psql -U opsroom -d postgres -q < "$W/product-roles.sql" >>"$INSTALL_LOG" 2>&1 || true
+    fi
+    run $DC exec -T opsroom-postgres psql -U opsroom -d opsroom -q -v ON_ERROR_STOP=1 < "$W/product-opsroom.sql" >>"$INSTALL_LOG" 2>&1 \
+      || dfail "the product database did not replay — see $INSTALL_LOG. The rows you cannot rebuild are in that dump, so nothing is handed over."
+
+    note "restoring:reading the restored data back"
+    pq() { run $DC exec -T "$1" psql -U "$2" -d "$3" -tAc "$4" 2>/dev/null | tr -d '[:space:]'; }
+    KU=$(pq postgres "$SU" keycloak "SELECT count(*) FROM user_entity")
+    OT=$(pq postgres "$SU" openfga "SELECT count(*) FROM tuple")
+    AO=$(pq postgres "$SU" asunset "SELECT count(*) FROM organization")
+    PV=$(pq opsroom-postgres opsroom opsroom "SELECT version_num FROM alembic_version")
+    PS=$(pq opsroom-postgres opsroom opsroom "SELECT count(*) FROM registry.sources")
+    printf 'restore read-back: keycloak_users=%s openfga_tuples=%s orgs=%s product_schema=%s sources=%s\n' \
+      "${KU:-0}" "${OT:-0}" "${AO:-0}" "${PV:-none}" "${PS:-?}" >>"$INSTALL_LOG"
+    [ "${KU:-0}" -gt 0 ] 2>/dev/null || dfail "the restored realm has no users — the identity replay did not land (see $INSTALL_LOG)"
+    [ "${OT:-0}" -gt 0 ] 2>/dev/null || dfail "the restored authorization store has no grants — every permission would be gone"
+    [ "${AO:-0}" -gt 0 ] 2>/dev/null || dfail "the restored identity database has no organizations"
+    [ -n "$PV" ] || dfail "the restored product database reports no schema revision"
+
+    note "restoring:the instance home"
+    if [ -s "$W/opsroom-home.tar.gz" ]; then
+      # Let COMPOSE create the volume (it labels what it owns; a volume made
+      # by hand is one compose refuses to adopt), then fill it.
+      run $DC run --rm --no-deps --entrypoint /bin/true opsroom-api >>"$INSTALL_LOG" 2>&1 || true
+      VOL=$(docker volume ls --format '{{.Name}}' | grep -m1 'opsroom_home')
+      [ -n "$VOL" ] || dfail "the instance home volume was not created — see $INSTALL_LOG"
+      docker run --rm -v "$VOL":/dst -v "$W":/in alpine tar xzf /in/opsroom-home.tar.gz -C /dst >>"$INSTALL_LOG" 2>&1 \
+        || dfail "the home archive did not extract into $VOL"
+    fi
+
+    note "restoring:checking the recovered configuration"
+    config_precheck || dfail "the recovered configuration is incomplete: ${CONFIG_GAPS:-see $INSTALL_LOG}"
+
+    note "restoring:starting the product"
+    # keycloak-init runs here and is SAFE against a restored realm: Keycloak's
+    # own --import-realm ignores a realm that exists, and init.sh only pushes
+    # policy knobs from the recovered configuration — the same values that
+    # built this realm. It does reset session lifespans, the known
+    # regression, so they are re-applied after, as on an install.
+    if ! run $DC up -d --wait --wait-timeout 900 >>"$INSTALL_LOG" 2>&1; then
+      run $DC logs --tail 40 opsroom-api >>"$INSTALL_LOG" 2>&1 || true
+      dfail "the stack did not come up healthy — see $INSTALL_LOG"
+    fi
+    note "restoring:re-applying realm session settings"
+    run ./bin/kc-session-lifespans.sh >/dev/null 2>&1 || true
+    # NO opsroom-init: the organization, team and project came back with the
+    # data. Running it would create a second one beside the restored rows.
+
+    note "restoring:final checks"
+    gate || dfail "final checks failed (compose health / api healthz / realm) — see $INSTALL_LOG"
+
+    # The source bytes are NOT copied back. They live in the data bucket,
+    # which outlived the machine; the mirror at <bucket>/data/ is the spare
+    # for the day the bucket itself is lost, and copying it over a live
+    # bucket would be the wrong default.
+    printf 'restore: source bytes untouched — the data bucket is independent of this host.\n' >>"$INSTALL_LOG"
+    printf '  If the DATA bucket was lost too: aws s3 sync %s/data/ <new-data-bucket>/\n' "${DEST%/}" >>"$INSTALL_LOG"
+
+    rm -rf "$W"
+    mkdir -p /etc/opsroom
+    { printf 'OPSROOM_TAG=%s\n' "$RTAG"
+      printf 'DEPLOY_COMMIT=%s\n' "$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+      printf 'RESTORED_FROM=%s\n' "$STAMP"; } > /etc/opsroom/versions
+
+    note "done:https://${TS_DNS}/"
+    sleep 5
+    handover
+    exit 0
+  fi
 
   note "installing:writing configuration"
   ADMIN_USER=$(j admin_user); ADMIN_PASS=$(j admin_pass)
@@ -172,6 +427,13 @@ if [ "${1:-}" = "--deploy" ]; then
       # like the image tag. `none` = a blank instance, and no line is written.
       case "$DISTRO" in ""|none) ;; *) printf 'OPSROOM_DISTRO=%s\n' "$DISTRO" ;; esac
       printf 'OPSROOM_BACKUP_DEST=s3://%s\nOPSROOM_BACKUP_S3_ENDPOINT=%s\n' "$(j backup_bucket)" "$(j s3_endpoint)"
+      # FILE STORAGE — the SECOND bucket, its own token (board 150 D3/D7).
+      # After G5 the API refuses to boot in production without these: an
+      # instance that cannot store a file cannot take an upload, and D4 left
+      # no path-shaped fallback to pretend with.
+      printf 'OPSROOM_OBJECT_STORE_BASE=%s\nOPSROOM_OBJECT_STORE_ENDPOINT=%s\n' "$(j obj_base)" "$(j obj_endpoint)"
+      printf 'OPSROOM_OBJECT_STORE_ACCESS_KEY_ID=%s\nOPSROOM_OBJECT_STORE_SECRET_ACCESS_KEY=%s\n' "$(j obj_key)" "$(j obj_secret)"
+      printf 'OPSROOM_OBJECT_STORE_REGION=%s\n' "$(j obj_region)"
       printf 'OPSROOM_BACKUP_S3_ACCESS_KEY_ID=%s\nOPSROOM_BACKUP_S3_SECRET_ACCESS_KEY=%s\n' "$(j s3_key)" "$(j s3_secret)"
       printf 'OPSROOM_BACKUP_PASSPHRASE=%s\nOPSROOM_BACKUP_RETAIN_DAYS=30\n' "$(j backup_pass)"
       printf 'OPSROOM_ORG=instance\nOPSROOM_TEAM=default\nOPSROOM_PROJECT=default\n'
@@ -243,6 +505,9 @@ if [ "${1:-}" = "--deploy" ]; then
   kc add-roles -r asunset --uusername="$ADMIN_USER" --rolename=platform_admin || true
   run ./bin/realm-doctor.sh >/dev/null 2>&1 || dfail "realm is not coherent — check ./bin/realm-doctor.sh"
 
+  note "installing:checking the configuration is complete"
+  config_precheck || dfail "the configuration this instance would boot with is incomplete: ${CONFIG_GAPS:-see $INSTALL_LOG}"
+
   note "installing:starting the product (pulled images — no build)"
   if ! run $DC up -d --wait --wait-timeout 900 >>"$INSTALL_LOG" 2>&1; then
     # An api that REFUSES to boot (missing config, D9) says so on its first
@@ -286,13 +551,7 @@ if [ "${1:-}" = "--deploy" ]; then
 
   note "done:https://${TS_DNS}/"
   sleep 5
-  # ORDER MATTERS (measured, twice): kill the setup server by ITS OWN pid,
-  # reset serve, then point :443 at the product.
-  if [ -r "$SETUP_DIR/server.pid" ]; then kill "$(cat "$SETUP_DIR/server.pid")" 2>/dev/null || true; fi
-  pkill -f "$SETUP_DIR/server.py" 2>/dev/null || true
-  sleep 1
-  tailscale serve reset >/dev/null 2>&1 || true
-  tailscale serve --bg --https=443 localhost:5173 >/dev/null 2>&1 || true
+  handover
   exit 0
 fi
 
@@ -368,12 +627,17 @@ PYEOF
   ok "backups/pre-upgrade-*-$STAMP.sql.gz"
   say "4/6 new orchestration"
   if grep -q '^OPSROOM_TAG=' .env 2>/dev/null; then
-    echo "    ! your .env pins OPSROOM_TAG and OVERRIDES the tracked release pin — remove it unless this is a deliberate rollback hold"
+    echo "    ! your .env pins OPSROOM_TAG and OVERRIDES the tracked release pin — a restore sets that pin deliberately (and a rollback hold does too). Remove the line when you mean to move forward."
   fi
   run git pull --ff-only
   ensure_trio .env || die "fix .env, then re-run --upgrade (nothing was pulled or recreated)"
   say "5/6 pull to completion, then recreate"
   run $DC pull -q
+  # AFTER the pull, because the NEW image's manifest is the one that matters:
+  # a release that adds a required row would otherwise be found by the boot
+  # refusal instead of here, with the old containers already gone.
+  config_precheck || die "the new version requires configuration this instance does not have: ${CONFIG_GAPS:-see $INSTALL_LOG}
+  Nothing was recreated — the running instance is untouched. Add what is named above to .env, then re-run --upgrade."
   run $DC up -d --wait --wait-timeout 900 || { run $DC logs --tail 40 opsroom-api || true; die "the stack did not come up healthy after the upgrade — version NOT recorded. Rollback: set OPSROOM_TAG=<previous> in .env (see versions.md), then: $DC pull && $DC up -d"; }
   say "6/6 gate, then record"
   # The version is recorded AFTER the gate passes — a red gate leaves
@@ -385,8 +649,25 @@ PYEOF
   exit 0
 fi
 
+# ── --restore: the SAME front half, a different form ──────────────────────
+# A restore needs everything an install needs (the tools, the tailnet, the
+# orchestration, a browser that can reach it) and then asks three different
+# questions. So it is not a separate path — it is this path with a flag, and
+# the deploy phase branches on it. One front half means the restore cannot
+# rot behind the install.
+RESTORE=0
 if [ "${1:-}" = "--restore" ]; then
-  die "--restore is not automated yet. The pieces exist: backup/restore-drill.sh proves a backup restores; the form's 'Restore an existing age key' mode re-keys a fresh install. Doc: README.md#restore"
+  RESTORE=1
+  # REFUSE OVER A LIVING INSTANCE. Restoring here would replay one instance's
+  # databases into another's, and the first sign would be someone else's data.
+  RHOME=$(getent passwd "$OPS_USER" 2>/dev/null | cut -d: -f6 || true)
+  if [ -n "$RHOME" ] && [ -f "$RHOME/opsroom-deploy/.env" ] \
+     && docker volume inspect opsroom_postgres-data >/dev/null 2>&1; then
+    die "this machine already runs an instance ($RHOME/opsroom-deploy/.env exists and its volumes are here).
+  A restore would replay a backup over it. If that instance is finished with:
+    sudo bash install.sh --fresh          (keeps the age key)
+  then run --restore again. If it is NOT finished with, restore on another box."
+  fi
 fi
 
 # ════════════════════════════════════════════════════════════════════════
@@ -526,14 +807,29 @@ ANSWERS="$SETUP_DIR/answers.json"
 : > "$STATUS_FILE"; chmod 644 "$STATUS_FILE"
 : > "$INSTALL_LOG"; chmod 644 "$INSTALL_LOG"
 setsid python3 "$SETUP_DIR/server.py" "$SETUP_DIR" "$ANSWERS" "$SETUP_PORT" "$STATUS_FILE" "$SELF_COPY" "$REPO_DIR" "$TS_DNS" "$OPS_USER" "$INSTALL_LOG" \
-  "$REGISTRY_HOST" "$REGISTRY_NS" "$PULLED" \
+  "$REGISTRY_HOST" "$REGISTRY_NS" "$PULLED" "$RESTORE" \
   </dev/null >>"$INSTALL_LOG" 2>&1 &
 sleep 1
 tailscale serve --https=443 off >/dev/null 2>&1 || true
 tailscale serve --bg --https=443 "http://127.0.0.1:${SETUP_PORT}" >/dev/null 2>&1 || die "tailscale serve failed"
 
-ok "setup is ready"
-cat <<EOF
+if [ "$RESTORE" = 1 ]; then
+  ok "restore is ready"
+  cat <<EOF
+
+    Open this on any device on your tailnet:
+
+      https://${TS_DNS}/
+
+    It asks which backup, and for the two keys from your password manager:
+    the backup passphrase and the AGE-SECRET-KEY. Everything else comes back
+    from the backup. The page shows progress and drops you into the restored
+    instance. You can close this terminal; the restore does not run in it.
+    (Follow along if you like: tail -f $INSTALL_LOG)
+EOF
+else
+  ok "setup is ready"
+  cat <<EOF
 
     Open this on any device on your tailnet, and fill the form:
 
@@ -543,3 +839,4 @@ cat <<EOF
     into OpsRoom when it is done. You can close this terminal; the install
     does not run in it. (Follow along if you like: tail -f $INSTALL_LOG)
 EOF
+fi

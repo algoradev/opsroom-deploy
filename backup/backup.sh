@@ -22,6 +22,10 @@
 #   4. the repo — `git bundle --all` of this checkout: the exact
 #      orchestration commit your instance runs, so a restore rebuilds the
 #      same stack rather than the newest one.
+#   3b. the SEALED CONFIGURATION — `.env` encrypted to this instance's age
+#      key. The databases only accept the passwords that created them, and
+#      those live nowhere else. Without this a backup restores data that
+#      nothing can connect to.
 #   5. SOURCE BYTES — the data bucket mirrored into the backup bucket
 #      (board 150 D3). After the object-store cutover uploaded files are NOT
 #      in the home tarball, and a backup that lost them WOULD STILL REPORT
@@ -177,6 +181,51 @@ else
   note "opsroom-home.tar.gz" "*** FAILED ***"; fail=1
 fi
 
+echo "==> 3b/5 the sealed configuration (env.age)"
+# THE RESTORE'S MISSING HALF, AND THE REASON IT IS HERE. The dumps carry the
+# databases; the databases only accept the passwords that created them. Those
+# passwords are in `.env`, which is on the host filesystem and in NO other
+# artifact — so a backup without it restores DATA that nothing can connect
+# to. (Measured while building `--restore`: the identity dump re-creates the
+# roles with their old password hashes, and the Keycloak realm holds the old
+# client secret, so a freshly generated .env cannot start the stack it just
+# restored.)
+#
+# ENCRYPTED TO THE INSTANCE'S AGE KEY, NOT THE BACKUP PASSPHRASE. The
+# passphrase is in the same password manager as everything else, but the age
+# key is the one secret that is deliberately NOT in the backup, so sealing the
+# credentials under it means the bucket alone is never enough: whoever holds
+# the bucket still holds nothing until they also hold the key. That is the
+# property the dumps' gpg passphrase cannot give, because it travels with the
+# same operator habits.
+AGE_KEYFILE="${HOME}/.config/sops/age/keys.txt"
+if [ -r "$AGE_KEYFILE" ] && command -v age >/dev/null 2>&1; then
+  AGE_PUB=$(age-keygen -y "$AGE_KEYFILE" 2>/dev/null)
+  if [ -n "$AGE_PUB" ] && age -r "$AGE_PUB" -o "$WORK/env.age" .env 2>/dev/null && [ -s "$WORK/env.age" ]; then
+    # VERIFY BY DECRYPTING IT BACK. An unreadable seal is worse than none: it
+    # looks like a recovery path right up to the moment you need one.
+    if age -d -i "$AGE_KEYFILE" "$WORK/env.age" 2>/dev/null | grep -q '^APP_DB_PASSWORD='; then
+      note "env.age" "sealed to ${AGE_PUB:0:16}… · decrypts back"
+    else
+      note "env.age" "*** SEALED BUT DID NOT DECRYPT BACK ***"; fail=1
+    fi
+  else
+    note "env.age" "*** FAILED to seal .env ***"; fail=1
+  fi
+else
+  # A refusal in production, because this is the difference between a backup
+  # and a restorable backup — and it is fixable in one command.
+  if [ "$ENV_NAME" = "production" ]; then
+    note "env.age" "*** NO AGE KEY at $AGE_KEYFILE ***"
+    echo "      Without it the configuration is not in the backup, and the dumps"
+    echo "      restore to databases whose passwords are gone. Create one:"
+    echo "        age-keygen -o $AGE_KEYFILE   (then SAVE it in your password manager)"
+    fail=1
+  else
+    note "env.age" "skipped — no age key on this host (not production)"
+  fi
+fi
+
 echo "==> 4/5  repo bundle (orchestration — deliberately NOT encrypted)"
 if git bundle create "$WORK/dbt-test.bundle" --all >/dev/null 2>&1 \
    && git bundle verify "$WORK/dbt-test.bundle" >/dev/null 2>&1; then
@@ -295,6 +344,7 @@ contents:
   identity-all.sql.gpg     pg_dumpall — asunset + keycloak + openfga
   product-opsroom.sql.gpg  product database
   product-roles.sql.gpg    the product cluster's roles — load BEFORE the product replay
+  env.age                  this instance's .env, sealed to its AGE key (NOT the passphrase)
   opsroom-home.tar.gz.gpg  instance home volume ($TAR_NOTE)
   dbt-test.bundle          git bundle --all of the orchestration checkout
 source bytes: $data_sync
@@ -328,11 +378,11 @@ if [ "$MODE" = "s3" ]; then
   done
   [ -z "$up_err" ] || echo "      first error: $up_err"
   # VERIFY BY READING IT BACK from the destination — an upload that returned
-  # success proves the call, not the object. SIX objects since the roles file
-  # joined them (five before deploy-v0.2.2).
+  # success proves the call, not the object. SEVEN objects since the roles file
+  # and the sealed configuration joined them (five before deploy-v0.2.2).
   n=$(aws s3 ls "$PREFIX/" --endpoint-url "$S3_ENDPOINT" 2>/dev/null | wc -l)
   note "objects at destination" "$n"
-  [ "$n" -ge 6 ] || { echo "    ✗ expected 6 objects, found $n"; fail=1; }
+  [ "$n" -ge 7 ] || { echo "    ✗ expected 7 objects, found $n"; fail=1; }
   aws s3 cp "${DEST%/}/LATEST.txt" - --endpoint-url "$S3_ENDPOINT" >/dev/null 2>&1
   aws s3 cp "$WORK/MANIFEST.txt" "${DEST%/}/LATEST.txt" --endpoint-url "$S3_ENDPOINT" >/dev/null 2>&1
   # Write the marker INTO THE HOME VOLUME as well as the host: anything that
