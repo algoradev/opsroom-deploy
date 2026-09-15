@@ -30,7 +30,7 @@ services:
       - wget
       - -q
       - --spider
-      - http://localhost:2019/config/
+      - http://127.0.0.1:2019/config/
       timeout: 5s
     image: caddy:2.8-alpine
     networks:

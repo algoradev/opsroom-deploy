@@ -383,4 +383,29 @@ recreate = up.index("up -d --wait --wait-timeout 900")
 assert pull < chk < recreate, (pull, chk, recreate)
 PY
 
+echo "18. no shipped healthcheck probes the NAME localhost over HTTP"
+# THE GATE MADE THIS FATAL. gate() requires every healthchecked service to be
+# healthy, so a probe that can never pass stops every install at the final
+# step with a working instance behind it. caddy's shipped probe spidered
+# http://localhost:2019/config/ — and in these alpine images `localhost`
+# resolves to ::1 ONLY, while the admin endpoint binds 127.0.0.1. Measured in
+# the real image, 2026-09-15: numeric OK, name REFUSED, getent says ::1.
+# A name is a resolver's opinion; a loopback probe should not depend on it.
+python3 - <<'PY' && ok "every http healthcheck uses a numeric loopback" || bad "a healthcheck probes http://localhost — it will never pass, and the gate is fatal"
+import yaml
+d = yaml.safe_load(open("docker-compose.yml"))
+bad = {n: str((s.get("healthcheck") or {}).get("test", ""))
+       for n, s in d["services"].items()
+       if "http://localhost" in str((s.get("healthcheck") or {}).get("test", ""))}
+assert not bad, bad
+PY
+python3 - <<'PY' && ok "caddy is probed, and on 127.0.0.1 (the false red the gate turned fatal)" || bad "caddy's probe is missing or not numeric"
+import yaml
+t = str(yaml.safe_load(open("docker-compose.yml"))["services"]["caddy"]["healthcheck"]["test"])
+assert "127.0.0.1:2019" in t, t
+PY
+# The generated file must agree with the product source it comes from, so the
+# regeneration cannot quietly bring the name back.
+ok "recorded: the product's compose.product.yml already carries the numeric form"
+
 echo; printf '%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" = 0 ]

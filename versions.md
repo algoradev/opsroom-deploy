@@ -158,3 +158,32 @@ up. An image with no manifest reports "cannot pre-check" — never a pass.
 - NOT proven here: a fresh-box run of the restore, which needs a real
   backup and a real box. That is the plan's step 8b, and it is the one that
   turns this from built to true.
+
+## 2026-09-15 — deploy-v0.2.3
+
+- OPSROOM_TAG: 0.1.1 (unchanged)
+- deploy repo: deploy-v0.2.3 (prev: deploy-v0.2.2)
+
+**A one-line release blocker in v0.2.1 and v0.2.2, found by reading Juniper's
+addendum and then measuring it.** caddy's healthcheck in the generated compose
+spidered `http://localhost:2019/config/`. In the caddy alpine image
+`localhost` resolves to `::1` only (`getent hosts localhost` → `::1`), and the
+admin endpoint binds `127.0.0.1` — so the probe is refused on every tick and
+caddy is `unhealthy` forever. Verified directly in `caddy:2.8-alpine`:
+numeric OK, name REFUSED.
+
+Harmless before v0.2.1, because nothing `depends_on` caddy. **Fatal from
+v0.2.1**, because `gate()` requires every healthchecked service to be healthy
+— so the final check of every fresh install, and every `--upgrade`, would
+have failed with a perfectly good instance behind it. Neither tag had been
+run on a fresh box, which is exactly how a false red survives to a release.
+
+- `docker-compose.yml` is a GENERATED file and this is a hand patch, taken
+  deliberately: the product's `compose.product.yml` already carries the
+  numeric form, so this converges with the regeneration rather than diverging
+  from it. The regeneration (deploy-v0.3.0) will emit the same line.
+- `tests/proof.sh` section 18 asserts no shipped healthcheck probes
+  `http://localhost`, so the regeneration cannot bring the name back.
+- The lesson, recorded because it generalises: a gate that makes every red
+  fatal inherits every false red that was previously cosmetic. Turning a
+  report into a gate means auditing what it reports first.

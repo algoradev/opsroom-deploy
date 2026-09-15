@@ -40,6 +40,14 @@
       "breaking": false,
       "downgrade_safe_to": "deploy-v0.2.1",
       "notes": "Backups and restore only, no product tag move. backup.sh ships the product roles file and the age-sealed .env (7 objects, was 5) and refuses a production instance with no destination; the drill replays the product dump under ON_ERROR_STOP and proves the seal opens. install.sh --restore is implemented. MCP_BEARER=none is refused (D13). The five OPSROOM_OBJECT_STORE_* values are collected. The config pre-check runs through the image on all three paths. NOTE: a backup taken before this version carries no env.age, so --restore refuses it by name — take a fresh backup after upgrading. No migration ran."
+    },
+    {
+      "deploy_version": "deploy-v0.2.3",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": "deploy-v0.2.1",
+      "notes": "One-line fix, no product tag move: caddy's healthcheck probed http://localhost:2019 and `localhost` is ::1-only in that image while the admin endpoint binds 127.0.0.1, so caddy was unhealthy forever. Cosmetic before v0.2.1; FATAL from v0.2.1, where gate() requires every healthchecked service healthy — the final check of every install and upgrade would have failed over a working instance. Anyone on deploy-v0.2.1 or v0.2.2 should take this. No migration ran."
     }
   ],
   "_schema_head_note": "schema_head is null on every entry so far because no entry moves OPSROOM_TAG — the product alembic head has not changed across these deploy versions. The first entry that moves the tag must record the real head."
