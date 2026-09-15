@@ -103,4 +103,48 @@ for good in ("healthcare@0.1", "none", "x-y@1.2.3"): assert not errs(good), good
 for badv in ("", "Healthcare@1", "foo", "foo@", "@1"): assert errs(badv), badv
 PY
 
+echo "7. backup.sh: a production instance with no destination REFUSES (it used to exit 0)"
+# Run the real script from a throwaway tree so nothing touches this checkout.
+mkdir -p "$T/inst/backup"; cp backup/backup.sh "$T/inst/backup/"
+run_backup() {   # $1 = OPSROOM_ENV, $2 = OPSROOM_BACKUP_DEST value
+  printf 'OPSROOM_ENV=%s\nOPSROOM_BACKUP_DEST=%s\nOPSROOM_BACKUP_PASSPHRASE=x\n' "$1" "$2" > "$T/inst/.env"
+  ( cd "$T/inst" && bash backup/backup.sh 2>&1 ); printf 'rc=%s' "$?"
+}
+OUT=$(run_backup production none)
+case "$OUT" in
+  *"rc=1"*) printf '%s' "$OUT" | grep -q "PRODUCTION instance — refusing" \
+      && ok "production + dest none: exits 1 and names why" \
+      || bad "production + dest none: exited 1 without the sentence" ;;
+  *) bad "production + dest none did NOT refuse: ${OUT##*rc=}" ;;
+esac
+OUT=$(run_backup production "")
+printf '%s' "$OUT" | grep -q "rc=1" && ok "production + dest unset: also refuses" || bad "production + dest unset did not refuse"
+OUT=$(run_backup dev none)
+printf '%s' "$OUT" | grep -q "rc=0" && printf '%s' "$OUT" | grep -q "Nothing to do" \
+  && ok "dev + dest none: still 'nothing to do', exit 0 (no permanent red on a laptop)" \
+  || bad "dev + dest none should exit 0 with 'Nothing to do'"
+
+echo "8. backup.sh: data/ is excluded only when an object store holds it"
+# The branch, extracted and evaluated — the tar command is what the claim is.
+awk '/^if \[ -n "\$OBJ_BASE" \]; then$/,/^fi$/' backup/backup.sh > "$T/excl.sh"
+grep -q 'exclude=./data' "$T/excl.sh" || bad "could not extract the exclusion branch"
+( OBJ_BASE="s3://bucket" ; . "$T/excl.sh" ; case "$TAR_CMD" in *--exclude=./data*) exit 0;; *) exit 1;; esac ) \
+  && ok "object store configured: data/ EXCLUDED (step 5 mirrors it)" \
+  || bad "object store configured but data/ not excluded"
+( OBJ_BASE="" ; . "$T/excl.sh" ; case "$TAR_CMD" in *--exclude*) exit 1;; *) exit 0;; esac ) \
+  && ok "no object store: data/ INCLUDED (the tarball is its only copy)" \
+  || bad "no object store but data/ was excluded — that drops every upload"
+
+echo "9. both runners agree on the six objects and the roles file"
+grep -q 'n" -ge 6' backup/backup.sh && ok "backup.sh verifies 6 objects at the destination" || bad "backup.sh still expects 5"
+grep -q 'product-roles.sql.gpg' backup/restore-drill.sh && ok "the drill downloads the roles file" || bad "the drill ignores the roles file"
+grep -q 'ON_ERROR_STOP=1' backup/restore-drill.sh && ok "the drill REPLAYS the product dump (it used to only decrypt it)" || bad "the drill still never replays the product dump"
+# Comments may DISCUSS the retired sentinel (they explain why it went); only a
+# live line that tests for it is the false red this checks for.
+if grep -v "^[[:space:]]*#" backup/restore-drill.sh | grep -q "context.yaml"; then
+  bad "the drill still asserts the retired context.yaml"
+else
+  ok "no live line asserts the retired context.yaml"
+fi
+
 echo; printf '%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" = 0 ]
