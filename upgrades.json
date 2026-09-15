@@ -48,6 +48,14 @@
       "breaking": false,
       "downgrade_safe_to": "deploy-v0.2.1",
       "notes": "One-line fix, no product tag move: caddy's healthcheck probed http://localhost:2019 and `localhost` is ::1-only in that image while the admin endpoint binds 127.0.0.1, so caddy was unhealthy forever. Cosmetic before v0.2.1; FATAL from v0.2.1, where gate() requires every healthchecked service healthy — the final check of every install and upgrade would have failed over a working instance. Anyone on deploy-v0.2.1 or v0.2.2 should take this. No migration ran."
+    },
+    {
+      "deploy_version": "deploy-v0.2.4",
+      "product_tag": "0.1.1",
+      "schema_head": null,
+      "breaking": false,
+      "downgrade_safe_to": "deploy-v0.2.3",
+      "notes": "Guidance fix with teeth, no product tag move: OPSROOM_BACKUP_DEST=none is accepted by the API but refused by backup.sh in production, and every instance from this repo is production — so .env.example was recommending a state whose every scheduled backup refuses. install.sh and --upgrade now stop on it; .env.example no longer offers it. `none` on a dev instance is unchanged. No migration ran."
     }
   ],
   "_schema_head_note": "schema_head is null on every entry so far because no entry moves OPSROOM_TAG — the product alembic head has not changed across these deploy versions. The first entry that moves the tag must record the real head."

@@ -161,7 +161,18 @@ ensure_trio() {   # $1 = path to .env ; returns 1 with a message when a human mu
     printf 'MCP_BEARER=%s\n' "$(openssl rand -base64 48 | tr -d '/+=\n' | cut -c1-48)" >> "$envf"; echo "MCP_BEARER: minted and appended to $envf"
   fi
   if ! grep -q '^OPSROOM_BACKUP_DEST=.' "$envf"; then
-    echo "OPSROOM_BACKUP_DEST is unset in $envf — the product refuses to boot without a decision. Set it to s3://<bucket> (plus the OPSROOM_BACKUP_S3_* lines, see .env.example) or, deliberately, to: none"
+    echo "OPSROOM_BACKUP_DEST is unset in $envf — the product refuses to boot without a decision. Set it to s3://<bucket>, plus the OPSROOM_BACKUP_S3_* lines (see .env.example)."
+    return 1
+  fi
+  # `none` IS ACCEPTED BY THE API AND REFUSED BY backup.sh (production), and a
+  # customer instance is always production — so leaving it here would boot an
+  # instance whose every scheduled backup refuses, which is the quietest
+  # possible way to have no backups. The two halves must agree, and this is
+  # where an operator can still act on it. (The product repo corrected the
+  # same invitation in its own .env.example on 2026-09-15.)
+  if [ "$(grep '^OPSROOM_ENV=' "$envf" | head -1 | cut -d= -f2-)" = production ] \
+     && [ "$(grep '^OPSROOM_BACKUP_DEST=' "$envf" | head -1 | cut -d= -f2-)" = none ]; then
+    echo "OPSROOM_BACKUP_DEST=none on a PRODUCTION instance: the API accepts that word but backup/backup.sh refuses it, so this instance would boot and then never take a backup. Set a destination (s3://<bucket> + the OPSROOM_BACKUP_S3_* lines). A production deployment with no backups is not a configuration this path supports."
     return 1
   fi
   return 0

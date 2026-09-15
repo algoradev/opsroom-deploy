@@ -187,3 +187,29 @@ run on a fresh box, which is exactly how a false red survives to a release.
 - The lesson, recorded because it generalises: a gate that makes every red
   fatal inherits every false red that was previously cosmetic. Turning a
   report into a gate means auditing what it reports first.
+
+## 2026-09-15 — deploy-v0.2.4
+
+- OPSROOM_TAG: 0.1.1 (unchanged)
+- deploy repo: deploy-v0.2.4 (prev: deploy-v0.2.3)
+
+**`OPSROOM_BACKUP_DEST=none` meant two different things in two places, and this
+file was recommending the bad one.** The API's config accepts `none` as a
+declared choice. `backup/backup.sh` REFUSES it on a production instance — and
+every instance installed from this repo is production. So an operator who took
+`.env.example`'s advice got an instance that booted normally and whose every
+scheduled backup refused: success by doing nothing, which is the failure the
+refusal was added to prevent.
+
+- `install.sh` and `install.sh --upgrade` now stop on that combination and say
+  why, so the installer and the backup runner agree.
+- `.env.example` no longer offers the word. It says what `none` is for (dev)
+  and that this path stops on it.
+- `none` on a non-production instance is still accepted, unchanged.
+
+Found by reading the product repo's own correction of the same invitation
+(`6dd9e18`, 2026-09-15: "`none` (a declared choice; doctor skips)" — nothing
+skips, and backup.sh refuses). The customer-facing copy of a wrong sentence
+needs finding separately from the one that was fixed.
+
+- tests/proof.sh: 54 checks.

@@ -54,9 +54,11 @@ printf 'OPSROOM_ENV=production\n' > "$T/bare.env"
 OUT=$(ensure_trio "$T/bare.env"); rc=$?
 check "no backup dest: returns 1, mints the other two, names the decision" \
   '[ $rc = 1 ] && grep -q "^MCP_BEARER=." "$T/bare.env" && grep -q "^SESSION_TOKEN_PRIVATE_KEY_B64=." "$T/bare.env" && printf "%s" "$OUT" | grep -q "OPSROOM_BACKUP_DEST is unset"'
-printf 'OPSROOM_BACKUP_DEST=none\n' >> "$T/bare.env"
+# A REAL destination closes it. `none` does not, on a production instance —
+# see section 15: backup.sh refuses that word, and the two must agree.
+printf 'OPSROOM_BACKUP_DEST=s3://bucket\n' >> "$T/bare.env"
 ensure_trio "$T/bare.env" >/dev/null; rc=$?
-check "dest declared none: accepted"      '[ $rc = 0 ]'
+check "a real destination closes the trio" '[ $rc = 0 ]'
 
 echo "4. gate step 1: the compose ps format + filter, against a real running stack"
 if docker compose ls --format json 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if any(p["Status"].startswith("running") for p in json.load(sys.stdin)) else 1)'; then
@@ -308,9 +310,20 @@ check "MCP_BEARER=none: refused, with the reason" \
 printf 'OPSROOM_ENV=production\nMCP_BEARER=log\nOPSROOM_BACKUP_DEST=s3://b\nSESSION_TOKEN_PRIVATE_KEY_B64=x\n' > "$T/mcp2.env"
 OUT=$(ensure_trio "$T/mcp2.env"); rc=$?
 check "MCP_BEARER=log: refused too (the manifest off-vocabulary is none+log)" '[ $rc = 1 ]'
+# `none` FOR BACKUPS: accepted by the API's config, REFUSED by backup.sh in
+# production — so on this path, where every instance IS production, the
+# installer must refuse it too or it boots an instance that never backs up.
 printf 'OPSROOM_ENV=production\nMCP_BEARER=a-real-secret\nOPSROOM_BACKUP_DEST=none\nSESSION_TOKEN_PRIVATE_KEY_B64=x\n' > "$T/mcp3.env"
-ensure_trio "$T/mcp3.env" >/dev/null; rc=$?
-check "a real bearer with backups declared none: accepted (only that row has an off switch)" '[ $rc = 0 ]'
+OUT=$(ensure_trio "$T/mcp3.env"); rc=$?
+check "backups=none on PRODUCTION: refused, because backup.sh would refuse it later" \
+  '[ $rc = 1 ] && printf "%s" "$OUT" | grep -q "never take a backup"'
+printf 'OPSROOM_ENV=dev\nMCP_BEARER=a-real-secret\nOPSROOM_BACKUP_DEST=none\nSESSION_TOKEN_PRIVATE_KEY_B64=x\n' > "$T/mcp4.env"
+ensure_trio "$T/mcp4.env" >/dev/null; rc=$?
+check "backups=none on a DEV instance: still accepted (that is what the word is for)" '[ $rc = 0 ]'
+printf 'OPSROOM_ENV=production\nMCP_BEARER=a-real-secret\nOPSROOM_BACKUP_DEST=s3://b\nSESSION_TOKEN_PRIVATE_KEY_B64=x\n' > "$T/mcp5.env"
+ensure_trio "$T/mcp5.env" >/dev/null; rc=$?
+check "a real destination on production: accepted" '[ $rc = 0 ]'
+grep -q 'or none' .env.example && bad ".env.example still offers none for the backup destination" || ok ".env.example no longer offers none for backups"
 grep -q 'deliberately declared `none`' .env.example \
   && bad ".env.example still tells operators all three accept none" \
   || ok ".env.example no longer offers none for the bearer"
